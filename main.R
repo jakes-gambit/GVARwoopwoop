@@ -8,10 +8,11 @@
 #    3.  Unit-root & cointegration tests
 #    4.  Lag selection
 #    5.  Prepare GVAR dataset
-#    6.  Estimation  (frequentist + Bayesian)
+#    6.  Estimation  (frequentist, with optional ridge regularisation)
 #    7.  Diagnostics (in-sample + OOS)
 #    8.  Impulse responses
 #    9.  Conditional forecasting
+#   10.  Local Projections (Jordà 2005)
 ###############################################################################
 
 # ── 0. Source all modules ────────────────────────────────────────────────────
@@ -28,8 +29,7 @@ source("07_impulse_response.R")
 source("08_kalman_filter.R")
 source("09_waggoner_zha.R")
 source("10_vecm_estimation.R")
-source("11_bayesian_gvar.R")
-source("12_bayesian_diagnostics.R")
+source("11_local_projections.R")
 source("00b_fetch_weight_data.R")   # bilateral trade weight functions
 
 load_packages()
@@ -66,16 +66,12 @@ DETERMINISTIC <- "intercept"
 # COVID dummies: pulse dummies for specified quarters (set to NULL to disable)
 COVID_DUMMIES <- c("2020-Q1", "2020-Q2")   # set NULL to turn off
 
-# Bayesian prior (Minnesota/Litterman)
-BAYES_DRAWS      <- 1000
-BAYES_LAMBDA1    <- 0.01    # overall tightness
-BAYES_LAMBDA2    <- 0.01    # cross-variable tightness
-BAYES_LAMBDA3    <- 0.01    # lag decay
-BAYES_LAMBDA4    <- 0.01    # star-variable tightness
-BAYES_RW             <- TRUE    # TRUE = random-walk prior
-BAYES_REGULARISE     <- FALSE   # TRUE = reject explosive draws via rejection sampling
-BAYES_LAMBDA5        <- 0.05    # sum-of-coefficients prior (0 = off; 0.01–0.1 typical)
-BAYES_PROJECT_STABLE <- FALSE   # TRUE = rescale explosive companion draws to sr=0.99
+# ── Ridge regularisation ──────────────────────────────────────────────────────
+# Set RIDGE_LAMBDA > 0 to apply ridge (L2) shrinkage to the frequentist VAR.
+# A value of 0 (default) means plain OLS – no regularisation.
+# Typical starting range: 0.01 – 1.0.  Larger values impose more shrinkage.
+# The intercept is never penalised.
+RIDGE_LAMBDA  <- 0        # 0 = plain OLS; e.g. 0.1 for mild ridge
 
 # OOS evaluation
 OOS_H      <- 1
@@ -85,6 +81,12 @@ OOS_T0_FRAC <- 0.70
 IRF_HORIZON <- 20
 IRF_BOOT    <- 2000
 IRF_CI      <- 0.95
+
+# Local Projections
+LP_HORIZON  <- 20         # max horizon for LP-IRFs
+LP_N_LAGS   <- 1          # number of control lags in each LP regression
+LP_CI       <- 0.95       # confidence level (Newey-West HAC bands)
+LP_BOOT     <- 500        # bootstrap reps (set 0 to skip bootstrap)
 
 # Cointegration (Johansen)
 COINT_K    <- 2
@@ -188,30 +190,18 @@ gvar_data <- prepare_gvar_dataset(
 #  6.  ESTIMATION
 ###############################################################################
 
-# ── 6a. Frequentist ──────────────────────────────────────────────────────────
-
 if (USE_VECM) {
   gvar_model <- estimate_gvecm(gvar_data, rank_vec = coint_results$rank_vec,
                                 ecdet = COINT_DET, deterministic = DETERMINISTIC)
 } else {
-  gvar_model <- estimate_gvar(gvar_data, deterministic = DETERMINISTIC)
+  gvar_model <- estimate_gvar(gvar_data,
+                               deterministic = DETERMINISTIC,
+                               ridge_lambda  = RIDGE_LAMBDA)
 }
 
-# ── 6b. Bayesian ─────────────────────────────────────────────────────────────
-
-bayesian_model <- bayesian_estimate_gvar(
-  gvar_data,
-  n_draws        = BAYES_DRAWS,
-  lambda_1       = BAYES_LAMBDA1, lambda_2 = BAYES_LAMBDA2,
-  lambda_3       = BAYES_LAMBDA3, lambda_4 = BAYES_LAMBDA4,
-  rw_prior       = BAYES_RW, seed = 42,
-  deterministic  = DETERMINISTIC,
-  regularise     = BAYES_REGULARISE,
-  lambda_5       = BAYES_LAMBDA5,
-  project_stable = BAYES_PROJECT_STABLE
-)
-message(sprintf("[Bayesian] %d / %d draws stable.",
-                bayesian_model$n_stable, bayesian_model$n_draws))
+if (RIDGE_LAMBDA > 0) {
+  message(sprintf("[GVAR] Ridge regularisation applied (lambda = %.4f).", RIDGE_LAMBDA))
+}
 
 
 ###############################################################################
@@ -221,13 +211,9 @@ message(sprintf("[Bayesian] %d / %d draws stable.",
 diag_results <- run_all_diagnostics(
   gvar_model, sim_data, star_list, W, h = OOS_H, t0_frac = OOS_T0_FRAC)
 
-bayesian_diag <- run_bayesian_all_diagnostics(
-  bayesian_model, gvar_data, sim_data, star_list, W,
-  h = OOS_H, t0_frac = OOS_T0_FRAC)
-
 
 ###############################################################################
-#  8.  IMPULSE RESPONSES
+#  8.  IMPULSE RESPONSES  (VAR-based GIRF)
 ###############################################################################
 
 shock_var <- paste0(COUNTRIES[1], ".gdp_logdiff")
@@ -235,13 +221,7 @@ shock_var <- paste0(COUNTRIES[1], ".gdp_logdiff")
 irf_freq <- bootstrap_girf(gvar_model, shock_var,
                             horizon = IRF_HORIZON, n_boot = IRF_BOOT,
                             ci_level = IRF_CI)
-plot_irf(irf_freq, shock_label = paste(shock_var, "(Frequentist)"))
-
-irf_bayes <- bayesian_girf(bayesian_model, shock_var,
-                            horizon = IRF_HORIZON, ci_level = 0.90)
-plot_bayesian_irf(irf_bayes, shock_label = paste(shock_var, "(Bayesian)"))
-
-bayesian_model_comparison(irf_bayes, irf_freq)
+plot_irf(irf_freq, shock_label = shock_var)
 
 
 ###############################################################################
@@ -269,7 +249,30 @@ plot_conditional_forecast_wz(cf_wz, show_uncond = TRUE)
 
 compare_kf_wz(cf_kf, cf_wz)
 
-# ── 9c. Bayesian conditional forecast ────────────────────────────────────────
-cf_bayes <- bayesian_conditional_forecast(bayesian_model, conditions, max_h = 8,
-                                           data_list = sim_data, ci_level = 0.90)
-plot_bayesian_forecast(cf_bayes)
+
+###############################################################################
+# 10.  LOCAL PROJECTIONS  (Jordà 2005)
+###############################################################################
+
+# ── 10a. Analytic LP-IRFs with Newey-West HAC bands ──────────────────────────
+lp_result <- lp_gvar(gvar_model, shock_var,
+                      data_list = sim_data,
+                      n_lags    = LP_N_LAGS,
+                      horizon   = LP_HORIZON,
+                      ci_level  = LP_CI)
+
+plot_lp_irf(lp_result, shock_label = shock_var)
+
+# ── 10b. Bootstrap LP-IRFs (wild bootstrap) ───────────────────────────────────
+if (LP_BOOT > 0) {
+  lp_boot <- bootstrap_lp(gvar_model, shock_var,
+                           data_list = sim_data,
+                           n_lags    = LP_N_LAGS,
+                           horizon   = LP_HORIZON,
+                           n_boot    = LP_BOOT,
+                           ci_level  = LP_CI)
+  plot_lp_irf(lp_boot, shock_label = paste0(shock_var, " (Bootstrap LP)"))
+
+  # ── 10c. Compare LP vs VAR-GIRF ──────────────────────────────────────────
+  compare_lp_girf(lp_boot, irf_freq, shock_label = shock_var)
+}

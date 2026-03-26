@@ -132,7 +132,7 @@ lag_matrix <- function(Y, max_lag) {
 #'   \item{residuals}{T × k residual matrix}
 #'   \item{fitted}{T × k fitted values}
 #'   \item{sigma}{k × k residual covariance matrix (1/T scaling)}
-ols_estimate <- function(Y, X, intercept = TRUE) {
+ols_estimate <- function(Y, X, intercept = TRUE, lambda = 0) {
   Y <- as.matrix(Y)
   X <- as.matrix(X)
 
@@ -140,9 +140,20 @@ ols_estimate <- function(Y, X, intercept = TRUE) {
     X <- cbind(1, X)
   }
 
-  # beta = (X'X)^{-1} X'Y
-  beta <- solve(crossprod(X), crossprod(X, Y))
-  fitted <- X %*% beta
+  p <- ncol(X)
+
+  # Ridge regression: beta = (X'X + lambda * D)^{-1} X'Y
+  # D is the penalty matrix: identity but with a zero for the intercept column
+  # so the intercept is never penalised.
+  if (lambda > 0) {
+    D <- diag(p)
+    if (intercept) D[1, 1] <- 0   # do not penalise the intercept
+    beta <- solve(crossprod(X) + lambda * D, crossprod(X, Y))
+  } else {
+    beta <- solve(crossprod(X), crossprod(X, Y))
+  }
+
+  fitted    <- X %*% beta
   residuals <- Y - fitted
 
   TT <- nrow(Y)
