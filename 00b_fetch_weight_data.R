@@ -1,496 +1,319 @@
 ###############################################################################
-#  00b_fetch_weight_data.R  –  Fetch Real Bilateral Trade & Financial Flow
-#                               Data for GVAR Weight Matrix Construction
+#  00b_fetch_weight_data.R  –  Bilateral Trade Weight Matrix from Empirical Data
 #
-#  Sources supported:
-#    1. OECD Bilateral Trade in Goods  (OECD.Stat via 'OECD' R package)
-#    2. BIS Consolidated Banking Statistics  (cross-border claims, 'BIS' package)
-#    3. IMF Direction of Trade Statistics  (DOTS, fallback via IMF Data API)
-#    4. FRED bilateral import proxies  (for a quick FREd-only fallback)
+#  Builds a row-normalised N×N weight matrix W for any set of countries.
+#  Data sources, tried in order:
+#    1. OECD Bilateral Trade in Goods (OECD package, OECD.Stat API)
+#    2. IMF Direction of Trade Statistics (DOTS, JSON REST API – no key needed)
 #
-#  Output: a named N×N weight matrix ready for build_weight_matrix() in
-#          02_data_preparation.R.
+#  Main entry point (called from main.R):
+#    W_raw <- fetch_trade_weights(countries, avg_years = 2014:2016)
 #
-#  PREREQUISITES (install once):
-#    install.packages(c("OECD", "BIS", "dplyr", "tidyr", "fredr"))
+#  The matrix can optionally be blended with BIS banking-claims weights to
+#  capture financial linkages alongside trade linkages.
 #
-#  USAGE:
-#    source("00b_fetch_weight_data.R")
-#    W_trade     <- build_oecd_trade_weights(countries, avg_years = 2014:2016)
-#    W_finance   <- build_bis_financial_weights(countries, avg_years = 2014:2016)
-#    W_combined  <- combine_weight_matrices(W_trade, W_finance, alpha = 0.5)
+#  PREREQUISITES:
+#    dplyr, httr, jsonlite  – always needed
+#    OECD                   – install.packages("OECD")  [optional, preferred]
+#    BIS                    – install.packages("BIS")   [optional, blending]
 ###############################################################################
 
 library(dplyr)
-library(tidyr)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: row-normalise a matrix (zero diagonal, rows sum to 1)
+# ISO-3 ↔ IMF-area-code mapping
+# The IMF DOTS API uses its own 2-letter area codes (mostly ISO-2, a few differ).
 # ─────────────────────────────────────────────────────────────────────────────
-row_normalise <- function(W) {
+
+ISO3_TO_IMF2 <- c(
+  USA="US", GBR="GB", DEU="DE", FRA="FR", ITA="IT", JPN="JP", CAN="CA",
+  AUS="AU", CHE="CH", SWE="SE", NOR="NO", KOR="KR", DNK="DK",
+  NLD="NL", BEL="BE", AUT="AT", ESP="ES", PRT="PT", GRC="GR",
+  IRL="IE", FIN="FI", POL="PL", CZE="CZ", HUN="HU", SVK="SK",
+  SVN="SI", ROU="RO", BGR="BG", HRV="HR", MEX="MX", BRA="BR",
+  ZAF="ZA", TUR="TR", RUS="RU", IND="IN", CHN="CN", IDN="ID",
+  EA ="U2"
+)
+
+# Row-normalise a weight matrix (zero diagonal, each row sums to 1).
+.row_norm <- function(W) {
   diag(W) <- 0
   rs <- rowSums(W, na.rm = TRUE)
-  rs[rs == 0] <- 1   # avoid division by zero (isolated country → equal weights)
+  rs[rs == 0] <- 1   # isolated country → equal weights after norm
   W / rs
 }
 
+# Expand a smaller matrix to the full country set, filling missing pairs with 0.
+.pad <- function(W, countries) {
+  N   <- length(countries)
+  out <- matrix(0, N, N, dimnames = list(countries, countries))
+  hit <- intersect(rownames(W), countries)
+  hit_c <- intersect(colnames(W), countries)
+  if (length(hit) > 0 && length(hit_c) > 0)
+    out[hit, hit_c] <- W[hit, hit_c, drop = FALSE]
+  out
+}
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 1.  OECD Bilateral Trade in Goods
-#     Dataset: "OECD ITCS" – SITC or HS based bilateral trade flows
-#     Package: OECD  (install.packages("OECD"))
-# ═════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# Source 1 : OECD Bilateral Trade in Goods
+#   Dataset : TRADE_IN_GOODS  (annual, USD millions)
+#   Requires: install.packages("OECD")
+# ─────────────────────────────────────────────────────────────────────────────
 
-#' Build a trade-flow weight matrix from OECD bilateral trade statistics.
-#'
-#' Uses the OECD "TRADE_IN_GOODS" dataset (Total Trade, USD, annual).
-#' Weights are constructed as trade_ij / (sum_j trade_ij) — the share of
-#' country j in country i's total bilateral trade.
-#'
-#' @param countries  Character vector of ISO-3 country codes matching your
-#'                   GVAR unit names  (e.g. c("DEU","FRA","ITA","ESP"))
-#' @param avg_years  Integer vector of years to average (default 3-year avg)
-#' @return           Named N×N row-normalised weight matrix
-build_oecd_trade_weights <- function(countries,
-                                     avg_years = 2014:2016) {
+.oecd_trade <- function(countries, avg_years) {
 
-  if (!requireNamespace("OECD", quietly = TRUE))
-    stop("Package 'OECD' required. Run: install.packages('OECD')")
+  if (!requireNamespace("OECD", quietly = TRUE)) return(NULL)
 
-  cat("[OECD Trade] Fetching bilateral trade data ...\n")
-
-  # OECD ITCS dataset ID
-  dataset_id <- "TRADE_IN_GOODS"
-
-  # Filter for selected countries as reporters and partners
-  filter_list <- list(
-    REPORTER = countries,
-    PARTNER  = countries,
-    MEASURE  = "USD",          # USD millions
-    TIME     = as.character(avg_years)
-  )
+  cat("[Weights] Fetching bilateral trade from OECD...\n")
 
   raw <- tryCatch(
-    OECD::get_dataset(dataset_id, filter = filter_list, start_time = min(avg_years),
-                      end_time = max(avg_years)),
-    error = function(e) {
-      message("[OECD Trade] Download failed: ", e$message)
-      return(NULL)
-    }
+    OECD::get_dataset(
+      dataset    = "TRADE_IN_GOODS",
+      filter     = list(REPORTER = countries,
+                        PARTNER  = countries,
+                        FLOW     = "EXP",
+                        MEASURE  = "USD"),
+      start_time = min(avg_years),
+      end_time   = max(avg_years)
+    ),
+    error = function(e) { message("  OECD error: ", e$message); NULL }
   )
 
-  if (is.null(raw) || nrow(raw) == 0) {
-    message("[OECD Trade] No data returned. Returning NULL.")
-    return(NULL)
-  }
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
 
-  # Sum exports + imports as measure of bilateral linkage, average over years
+  # OECD package may return "obsValue" or "Value" depending on version
+  val_col <- intersect(c("obsValue", "Value", "value"), names(raw))[1]
+  if (is.na(val_col)) return(NULL)
+
   bilateral <- raw %>%
     dplyr::filter(REPORTER %in% countries, PARTNER %in% countries,
                   REPORTER != PARTNER) %>%
     dplyr::group_by(REPORTER, PARTNER) %>%
-    dplyr::summarise(trade = mean(as.numeric(obsValue), na.rm = TRUE),
-                     .groups = "drop")
+    dplyr::summarise(trade = mean(as.numeric(.data[[val_col]]), na.rm = TRUE),
+                     .groups = "drop") %>%
+    dplyr::filter(is.finite(trade), trade > 0)
 
-  # Pivot to N×N matrix
-  W_mat <- bilateral %>%
-    tidyr::pivot_wider(names_from = PARTNER, values_from = trade,
-                       values_fill = 0) %>%
+  if (nrow(bilateral) == 0) return(NULL)
+
+  W <- tidyr::pivot_wider(bilateral, names_from = PARTNER, values_from = trade,
+                           values_fill = 0) %>%
     tibble::column_to_rownames("REPORTER") %>%
     as.matrix()
 
-  # Ensure all requested countries appear (add zeros for missing pairs)
-  W_mat <- pad_weight_matrix(W_mat, countries)
-
-  cat(sprintf("[OECD Trade] Weight matrix built (%d x %d), years %s.\n",
-              nrow(W_mat), ncol(W_mat), paste(range(avg_years), collapse = "–")))
-
-  return(row_normalise(W_mat))
+  W <- .pad(W, countries)
+  covered <- mean(rowSums(W) > 0)
+  cat(sprintf("  OECD: %.0f%% of countries covered.\n", covered * 100))
+  .row_norm(W)
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Source 2 : IMF Direction of Trade Statistics (DOTS)
+#   Endpoint: https://data.imf.org/api/SDMX_JSON/CompactData/DOT/
+#   No API key required.  Uses annual exports (TXG_FOB_USD).
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 2.  BIS Consolidated Banking Statistics (Cross-border Financial Flows)
-#     Dataset: CBS "Immediate counterparty" basis (Table B1)
-#     Package: BIS  (install.packages("BIS"))
-# ═════════════════════════════════════════════════════════════════════════════
+.imf_dots <- function(countries, avg_years) {
 
-#' Build a financial-flow weight matrix from BIS consolidated banking stats.
-#'
-#' Uses BIS CBS total claims (USD millions) as a measure of cross-border
-#' financial linkages between countries.  The resulting matrix captures
-#' banking-sector exposures, which complement trade-based weights.
-#'
-#' @param countries  Character vector of ISO-3 country codes
-#' @param avg_years  Integer vector of years to average (default 3-year avg)
-#' @return           Named N×N row-normalised weight matrix
-build_bis_financial_weights <- function(countries,
-                                        avg_years = 2014:2016) {
-
-  if (!requireNamespace("BIS", quietly = TRUE))
-    stop("Package 'BIS' required. Run: install.packages('BIS')")
-
-  cat("[BIS] Fetching consolidated banking statistics ...\n")
-
-  # BIS provides a pre-built tidy dataset; download and filter
-  bis_raw <- tryCatch(
-    BIS::get_bis("CBS"),   # Consolidated Banking Statistics
-    error = function(e) {
-      message("[BIS] Download failed: ", e$message)
-      return(NULL)
-    }
-  )
-
-  if (is.null(bis_raw) || nrow(bis_raw) == 0) {
-    message("[BIS] No data returned. Returning NULL.")
+  if (!requireNamespace("httr",     quietly = TRUE) ||
+      !requireNamespace("jsonlite", quietly = TRUE)) {
+    message("  [Weights] httr/jsonlite not installed – skipping IMF DOTS.")
     return(NULL)
   }
 
-  # Filter: immediate counterparty basis, total claims (all sectors, all maturities)
-  bilateral <- bis_raw %>%
-    dplyr::filter(
-      measure       == "B",         # Immediate counterparty basis
-      reporting_country %in% countries,
-      counterparty_country %in% countries,
-      reporting_country != counterparty_country,
-      currency  == "TO1",           # All currencies
-      date >= as.Date(paste0(min(avg_years), "-01-01")),
-      date <= as.Date(paste0(max(avg_years), "-12-31"))
-    ) %>%
-    dplyr::group_by(reporting_country, counterparty_country) %>%
-    dplyr::summarise(claims = mean(as.numeric(obs_value), na.rm = TRUE),
-                     .groups = "drop")
+  cat("[Weights] Fetching bilateral trade from IMF DOTS...\n")
 
-  # Pivot to N×N matrix
-  W_mat <- bilateral %>%
-    tidyr::pivot_wider(names_from = counterparty_country, values_from = claims,
-                       values_fill = 0) %>%
-    tibble::column_to_rownames("reporting_country") %>%
-    as.matrix()
+  # Map ISO-3 → IMF-2; warn about unmapped codes
+  imf2 <- ISO3_TO_IMF2[countries]
+  missing <- countries[is.na(imf2)]
+  if (length(missing) > 0)
+    message("  [Weights] No IMF-2 code for: ", paste(missing, collapse=", "),
+            " – these will get zero bilateral weight.")
+  imf2  <- imf2[!is.na(imf2)]
+  if (length(imf2) == 0) return(NULL)
 
-  W_mat <- pad_weight_matrix(W_mat, countries)
+  partners_str <- paste(imf2, collapse = "+")
+  N     <- length(countries)
+  W_imf <- matrix(0, length(imf2), length(imf2),
+                   dimnames = list(imf2, imf2))
 
-  cat(sprintf("[BIS] Weight matrix built (%d x %d), years %s.\n",
-              nrow(W_mat), ncol(W_mat), paste(range(avg_years), collapse = "–")))
-
-  return(row_normalise(W_mat))
-}
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 3.  IMF Direction of Trade Statistics (DOTS) via IMF Data API
-#     No R package needed – plain HTTP JSON request via httr / jsonlite
-# ═════════════════════════════════════════════════════════════════════════════
-
-#' Build a trade weight matrix using the IMF DOTS API.
-#'
-#' Falls back to the IMF REST API when the OECD package is unavailable.
-#' Fetches annual exports (TXG_FOB_USD) for all reporter–partner pairs.
-#'
-#' @param countries  Character vector of ISO-2 country codes (IMF format)
-#'                   Note: IMF DOTS uses 2-digit ISO codes (e.g. "DE","FR")
-#' @param avg_years  Integer vector of years to average
-#' @return           Named N×N row-normalised weight matrix
-build_imf_dots_weights <- function(countries_iso2,
-                                   avg_years = 2014:2016) {
-
-  if (!requireNamespace("httr", quietly = TRUE) ||
-      !requireNamespace("jsonlite", quietly = TRUE))
-    stop("Packages 'httr' and 'jsonlite' required. Run: install.packages(c('httr','jsonlite'))")
-
-  cat("[IMF DOTS] Fetching bilateral exports via IMF Data API ...\n")
-
-  N     <- length(countries_iso2)
-  W_mat <- matrix(0, N, N,
-                  dimnames = list(countries_iso2, countries_iso2))
-
-  base_url <- "https://www.imf.org/external/datamapper/api/v1/TXG_FOB_USD"
-
-  for (reporter in countries_iso2) {
-    url <- sprintf("%s/%s", base_url, reporter)
+  for (rep in imf2) {
+    url <- sprintf(
+      "https://data.imf.org/api/SDMX_JSON/CompactData/DOT/A.%s.TXG_FOB_USD.%s?startPeriod=%d&endPeriod=%d",
+      rep, partners_str, min(avg_years), max(avg_years)
+    )
 
     resp <- tryCatch(
       httr::GET(url, httr::timeout(30)),
       error = function(e) NULL
     )
-
     if (is.null(resp) || httr::status_code(resp) != 200) {
-      message(sprintf("[IMF DOTS] Skipping %s: API error", reporter))
+      message(sprintf("  [Weights] IMF DOTS failed for reporter %s", rep))
+      Sys.sleep(1)
       next
     }
 
-    parsed <- jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
-                                  simplifyVector = FALSE)
-
-    partners_data <- parsed$values$TXG_FOB_USD[[reporter]]
-
-    if (is.null(partners_data)) next
-
-    for (partner in countries_iso2) {
-      if (reporter == partner) next
-      vals <- partners_data[[partner]]
-      if (is.null(vals)) next
-
-      year_vals <- unlist(vals[as.character(avg_years)])
-      if (length(year_vals) > 0) {
-        W_mat[reporter, partner] <- mean(as.numeric(year_vals), na.rm = TRUE)
-      }
-    }
-
-    Sys.sleep(0.3)   # polite rate limiting
-  }
-
-  cat(sprintf("[IMF DOTS] Weight matrix built (%d x %d).\n", N, N))
-  return(row_normalise(W_mat))
-}
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 4.  FRED-Based Fallback – Approximate Bilateral Weights
-#     Uses country-level total imports/exports from FRED as a
-#     simple proxy when bilateral sources are unavailable.
-#     NOTE: This produces ONLY approximate weights; prefer OECD/BIS/IMF above.
-# ═════════════════════════════════════════════════════════════════════════════
-
-#' Build approximate trade weights from FRED country-level trade series.
-#'
-#' When no bilateral data source is available, this helper constructs a
-#' symmetric weight matrix using each country's total trade (imports + exports)
-#' from FRED.  Weights are proportional to trade size — larger economies receive
-#' higher weight.  This is a last-resort approximation only.
-#'
-#' @param countries  Character vector of country codes matching fred_series names
-#' @param avg_years  Integer vector of years to average
-#' @param api_key    FRED API key (uses fredr_set_key() if already set)
-#' @return           Named N×N symmetric row-normalised weight matrix
-build_fred_approx_weights <- function(countries,
-                                      avg_years = 2014:2016,
-                                      api_key   = NULL) {
-
-  if (!requireNamespace("fredr", quietly = TRUE))
-    stop("Package 'fredr' required.")
-
-  if (!is.null(api_key)) fredr::fredr_set_key(api_key)
-
-  # FRED total trade series (IMP + EXP in billions, SAAR) for major countries
-  # Extend with additional series as needed
-  fred_trade_series <- c(
-    USA = "BOPGSTB",     # US trade balance → use separate IMP/EXP
-    DEU = "XTEXVA01DEQ667S",
-    FRA = "XTEXVA01FRQ667S",
-    ITA = "XTEXVA01ITQ667S",
-    GBR = "XTEXVA01GBQ667S",
-    JPN = "XTEXVA01JPQ667S",
-    CAN = "XTEXVA01CAQ667S",
-    AUS = "XTEXVA01AUQ667S",
-    ESP = "XTEXVA01ESQ667S"
-  )
-
-  # Filter to requested countries
-  avail <- intersect(countries, names(fred_trade_series))
-
-  trade_size <- setNames(rep(NA_real_, length(countries)), countries)
-
-  for (ctry in avail) {
-    df <- tryCatch(
-      fredr::fredr(series_id   = fred_trade_series[[ctry]],
-                   observation_start = as.Date(paste0(min(avg_years), "-01-01")),
-                   observation_end   = as.Date(paste0(max(avg_years), "-12-31")),
-                   frequency   = "a"),
+    parsed <- tryCatch(
+      jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
+                         simplifyVector = FALSE),
       error = function(e) NULL
     )
+    if (is.null(parsed)) next
 
-    if (!is.null(df) && nrow(df) > 0) {
-      trade_size[[ctry]] <- mean(abs(df$value), na.rm = TRUE)
+    # Navigate SDMX-JSON structure: dataSets[[1]]$series
+    series <- tryCatch(parsed$dataSets[[1]]$series, error = function(e) NULL)
+    if (is.null(series)) next
+
+    # Each key is "freq:reporter:indicator:partner" (0-indexed positions)
+    # We need the partner dimension positions from structure
+    dims <- tryCatch(
+      parsed$structure$dimensions$series,
+      error = function(e) NULL
+    )
+    if (is.null(dims)) next
+
+    # Find partner dimension index (last dimension in our query)
+    partner_dim <- dims[[length(dims)]]$values   # list of {id, name}
+    partner_ids <- sapply(partner_dim, `[[`, "id")
+
+    obs_dim <- parsed$structure$dimensions$observation
+    time_ids <- sapply(obs_dim[[1]]$values, `[[`, "id")
+
+    for (key in names(series)) {
+      key_parts <- as.integer(strsplit(key, ":")[[1]]) + 1L  # 0-indexed → 1-indexed
+      par_idx   <- key_parts[length(key_parts)]
+      partner   <- partner_ids[par_idx]
+
+      if (is.na(partner) || !(partner %in% imf2) || partner == rep) next
+
+      obs <- series[[key]]$observations
+      vals <- sapply(names(obs), function(t_idx) {
+        yr <- time_ids[as.integer(t_idx) + 1L]
+        if (is.null(yr)) return(NA_real_)
+        if (as.integer(yr) %in% avg_years) as.numeric(obs[[t_idx]][[1]]) else NA_real_
+      })
+      vals <- vals[!is.na(vals) & is.finite(vals)]
+      if (length(vals) > 0)
+        W_imf[rep, partner] <- mean(vals)
     }
-    Sys.sleep(0.15)
+
+    Sys.sleep(0.5)   # polite rate limiting
   }
 
-  # For missing countries: impute with the median of available values
-  med_val <- median(trade_size, na.rm = TRUE)
-  if (is.na(med_val)) med_val <- 1
-  trade_size[is.na(trade_size)] <- med_val
+  # Rename back from IMF-2 to ISO-3
+  iso3_present <- names(ISO3_TO_IMF2)[ISO3_TO_IMF2 %in% imf2]
+  rownames(W_imf) <- names(ISO3_TO_IMF2)[match(rownames(W_imf), ISO3_TO_IMF2)]
+  colnames(W_imf) <- names(ISO3_TO_IMF2)[match(colnames(W_imf), ISO3_TO_IMF2)]
 
-  # Build outer-product symmetric approximation
-  N <- length(countries)
-  W_mat <- outer(trade_size, trade_size) / sum(trade_size)
-  dimnames(W_mat) <- list(countries, countries)
-
-  cat(sprintf("[FRED Approx] Approximate weight matrix built (%d x %d).\n", N, N))
-  message("[FRED Approx] WARNING: These are approximate weights based on trade size,",
-          " NOT bilateral flows. Use OECD/BIS/IMF sources when possible.")
-
-  return(row_normalise(W_mat))
+  W_full <- .pad(W_imf, countries)
+  covered <- mean(rowSums(W_full) > 0)
+  cat(sprintf("  IMF DOTS: %.0f%% of countries covered.\n", covered * 100))
+  .row_norm(W_full)
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Source 3 : BIS Consolidated Banking Statistics (optional blending)
+#   Dataset : CBS immediate-counterparty basis (Table B1)
+#   Requires: install.packages("BIS")
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 5.  Combine Multiple Weight Matrices (Trade + Financial)
-# ═════════════════════════════════════════════════════════════════════════════
+.bis_finance <- function(countries, avg_years) {
 
-#' Combine trade and financial weight matrices with a user-specified blend.
-#'
-#' Following Dees et al. (2007), weights can blend trade and financial linkages:
-#'   W_combined = alpha * W_trade + (1 - alpha) * W_finance
-#'
-#' @param W_trade    N×N trade weight matrix (from build_oecd_trade_weights)
-#' @param W_finance  N×N financial weight matrix (from build_bis_financial_weights)
-#' @param alpha      Blending weight for trade (0 = finance only, 1 = trade only)
-#' @return           N×N row-normalised combined weight matrix
-combine_weight_matrices <- function(W_trade, W_finance, alpha = 0.5) {
+  if (!requireNamespace("BIS", quietly = TRUE)) return(NULL)
 
-  stopifnot(alpha >= 0, alpha <= 1)
+  cat("[Weights] Fetching financial linkages from BIS CBS...\n")
 
-  # Align country order
-  countries <- rownames(W_trade)
-  if (!all(countries == rownames(W_finance)))
-    W_finance <- W_finance[countries, countries]
+  raw <- tryCatch(
+    BIS::get_bis("CBS"),
+    error = function(e) { message("  BIS error: ", e$message); NULL }
+  )
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
 
-  W_combined <- alpha * W_trade + (1 - alpha) * W_finance
+  # Identify column names (BIS package column names can vary across versions)
+  rep_col <- grep("reporting", names(raw), ignore.case = TRUE, value = TRUE)[1]
+  ctp_col <- grep("counterpart", names(raw), ignore.case = TRUE, value = TRUE)[1]
+  val_col <- grep("obs_value|value", names(raw), ignore.case = TRUE, value = TRUE)[1]
+  dat_col <- grep("^date$|time", names(raw), ignore.case = TRUE, value = TRUE)[1]
 
-  cat(sprintf("[Weights] Combined matrix: %.0f%% trade + %.0f%% financial.\n",
-              alpha * 100, (1 - alpha) * 100))
+  if (any(is.na(c(rep_col, ctp_col, val_col, dat_col)))) {
+    message("  BIS: unexpected column layout – skipping.")
+    return(NULL)
+  }
 
-  return(row_normalise(W_combined))
+  bilateral <- raw %>%
+    dplyr::filter(
+      .data[[rep_col]] %in% countries,
+      .data[[ctp_col]] %in% countries,
+      .data[[rep_col]] != .data[[ctp_col]],
+      as.integer(format(as.Date(.data[[dat_col]]), "%Y")) %in% avg_years
+    ) %>%
+    dplyr::group_by(reporter = .data[[rep_col]], counterparty = .data[[ctp_col]]) %>%
+    dplyr::summarise(claims = mean(as.numeric(.data[[val_col]]), na.rm = TRUE),
+                     .groups = "drop") %>%
+    dplyr::filter(is.finite(claims), claims > 0)
+
+  if (nrow(bilateral) == 0) return(NULL)
+
+  W <- tidyr::pivot_wider(bilateral, names_from = counterparty, values_from = claims,
+                           values_fill = 0) %>%
+    tibble::column_to_rownames("reporter") %>%
+    as.matrix()
+
+  W_full <- .pad(W, countries)
+  cat(sprintf("  BIS: %.0f%% of countries covered.\n",
+              mean(rowSums(W_full) > 0) * 100))
+  .row_norm(W_full)
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 6.  Utility: Pad a weight matrix to include all requested countries
-# ═════════════════════════════════════════════════════════════════════════════
-
-#' Ensure a weight matrix contains all requested countries.
+#' Fetch empirical bilateral trade data and build a GVAR weight matrix.
 #'
-#' Countries missing from the data receive zero bilateral weights; after
-#' row-normalisation they will have equal weight assigned to all partners.
+#' Tries OECD first, falls back to IMF DOTS.  Optionally blends with BIS
+#' financial-claims weights (set finance_alpha > 0 to activate).
 #'
-#' @param W_mat     Existing N×N matrix (possibly smaller than requested)
-#' @param countries Full set of requested country codes
-#' @return          Square matrix with dimnames = countries
-pad_weight_matrix <- function(W_mat, countries) {
+#' @param countries     ISO-3 character vector matching names(sim_data)
+#' @param avg_years     years to average (default 2014–2016 pre-COVID window)
+#' @param finance_alpha share of BIS financial weights in the blend (0 = trade
+#'                      only, 0.5 = equal trade/finance blend).  Requires the
+#'                      BIS package.
+#' @return Named N×N row-normalised weight matrix
+fetch_trade_weights <- function(countries,
+                                avg_years     = 2014:2016,
+                                finance_alpha = 0) {
 
-  N       <- length(countries)
-  W_full  <- matrix(0, N, N, dimnames = list(countries, countries))
+  cat("══════════════════════════════════════════════════════════════\n")
+  cat(sprintf("  Building weight matrix for: %s\n",
+              paste(countries, collapse=", ")))
+  cat(sprintf("  Average window: %d–%d\n", min(avg_years), max(avg_years)))
+  cat("══════════════════════════════════════════════════════════════\n")
 
-  present <- intersect(rownames(W_mat), countries)
+  # --- Trade weights (OECD → IMF DOTS) ---
+  W_trade <- .oecd_trade(countries, avg_years)
 
-  if (length(present) > 0) {
-    W_full[present, intersect(colnames(W_mat), countries)] <-
-      W_mat[present, intersect(colnames(W_mat), countries), drop = FALSE]
-  }
-
-  missing_ctry <- setdiff(countries, rownames(W_mat))
-  if (length(missing_ctry) > 0) {
-    message("[Weights] Countries not found in raw data (will get equal weights): ",
-            paste(missing_ctry, collapse = ", "))
-  }
-
-  return(W_full)
-}
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 7.  Master Function: Build Weight Matrix from Best Available Source
-# ═════════════════════════════════════════════════════════════════════════════
-
-#' Build a GVAR weight matrix from the best available bilateral data source.
-#'
-#' Tries sources in order: OECD → IMF DOTS → FRED approx.
-#' Optionally blends with BIS financial-flow weights.
-#'
-#' @param countries       Character vector of ISO-3 country codes (GVAR units)
-#' @param avg_years       Integer vector of years to average for weights
-#' @param include_finance Logical; if TRUE, blend trade with BIS financial weights
-#' @param alpha           Trade weight blend (1 = trade only, 0 = finance only)
-#' @param countries_iso2  ISO-2 codes for IMF DOTS (same order as countries)
-#' @return                Named N×N row-normalised weight matrix
-build_gvar_weights <- function(countries,
-                                avg_years       = 2014:2016,
-                                include_finance = FALSE,
-                                alpha           = 0.5,
-                                countries_iso2  = NULL) {
-
-  cat("═══════════════════════════════════════════════════════════════════════\n")
-  cat("  Building GVAR weight matrix from bilateral data\n")
-  cat("═══════════════════════════════════════════════════════════════════════\n\n")
-
-  W_trade <- NULL
-
-  # --- Try OECD first ---
-  if (requireNamespace("OECD", quietly = TRUE)) {
-    W_trade <- tryCatch(
-      build_oecd_trade_weights(countries, avg_years),
-      error = function(e) {
-        message("[Weights] OECD failed: ", e$message)
-        NULL
-      }
-    )
-  }
-
-  # --- Fallback: IMF DOTS ---
-  if (is.null(W_trade) && !is.null(countries_iso2)) {
-    W_trade <- tryCatch(
-      build_imf_dots_weights(countries_iso2, avg_years),
-      error = function(e) {
-        message("[Weights] IMF DOTS failed: ", e$message)
-        NULL
-      }
-    )
-  }
-
-  # --- Last resort: FRED approximation ---
   if (is.null(W_trade)) {
-    message("[Weights] Falling back to FRED approximate weights.")
-    W_trade <- build_fred_approx_weights(countries, avg_years)
+    W_trade <- .imf_dots(countries, avg_years)
   }
 
-  # --- Optionally blend with BIS financial weights ---
-  if (include_finance && requireNamespace("BIS", quietly = TRUE)) {
-    W_finance <- tryCatch(
-      build_bis_financial_weights(countries, avg_years),
-      error = function(e) {
-        message("[Weights] BIS failed, using trade weights only: ", e$message)
-        NULL
-      }
-    )
+  if (is.null(W_trade)) {
+    stop("[Weights] Could not retrieve bilateral trade data from OECD or IMF DOTS.\n",
+         "  Install the 'OECD' package or ensure internet access for the IMF API.")
+  }
 
-    if (!is.null(W_finance)) {
-      W_trade <- combine_weight_matrices(W_trade, W_finance, alpha = alpha)
+  # --- Optional financial-linkage blend ---
+  if (finance_alpha > 0) {
+    W_fin <- .bis_finance(countries, avg_years)
+    if (!is.null(W_fin)) {
+      W_trade <- (1 - finance_alpha) * W_trade + finance_alpha * W_fin
+      W_trade <- .row_norm(W_trade)
+      cat(sprintf("  Blended: %.0f%% trade + %.0f%% BIS financial.\n",
+                  (1 - finance_alpha) * 100, finance_alpha * 100))
+    } else {
+      message("  BIS data unavailable – using trade weights only.")
     }
   }
 
-  cat("\n[Weights] Done. Pass this matrix to prepare_gvar_dataset() as 'weights'.\n")
-  return(W_trade)
+  cat("  Weight matrix ready.\n")
+  W_trade
 }
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 8.  Example Usage (commented out – run manually)
-# ═════════════════════════════════════════════════════════════════════════════
-
-# selected_countries <- c("DEU", "FRA", "ITA", "ESP")
-#
-# # Option A: Trade weights only (OECD → IMF fallback → FRED approx)
-# W_raw <- build_gvar_weights(
-#   countries = selected_countries,
-#   avg_years = 2014:2016
-# )
-#
-# # Option B: Trade + financial blend (50/50)
-# W_raw <- build_gvar_weights(
-#   countries       = selected_countries,
-#   avg_years       = 2014:2016,
-#   include_finance = TRUE,
-#   alpha           = 0.5
-# )
-#
-# # Then pass to GVAR preparation (02_data_preparation.R):
-# gvar_data_obj <- prepare_gvar_dataset(
-#   data_list   = sim_data,
-#   weights     = W_raw,
-#   p_lag       = p_vec,
-#   q_lag       = q_vec,
-#   global_vars = GLOBAL_VARS
-# )
-
-cat("Note: Content generated using AI - expert verification recommended.\n")
