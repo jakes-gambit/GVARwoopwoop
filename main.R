@@ -67,12 +67,13 @@ DETERMINISTIC <- "intercept"
 COVID_DUMMIES <- c("2020-Q1", "2020-Q2")   # set NULL to turn off
 
 # Bayesian prior (Minnesota/Litterman)
-BAYES_DRAWS   <- 1000
-BAYES_LAMBDA1 <- 0.01    # overall tightness
-BAYES_LAMBDA2 <- 0.01    # cross-variable tightness
-BAYES_LAMBDA3 <- 0.01    # lag decay
-BAYES_LAMBDA4 <- 0.01    # star-variable tightness
-BAYES_RW      <- TRUE    # TRUE = random-walk prior
+BAYES_DRAWS      <- 1000
+BAYES_LAMBDA1    <- 0.01    # overall tightness
+BAYES_LAMBDA2    <- 0.01    # cross-variable tightness
+BAYES_LAMBDA3    <- 0.01    # lag decay
+BAYES_LAMBDA4    <- 0.01    # star-variable tightness
+BAYES_RW         <- TRUE    # TRUE = random-walk prior
+BAYES_REGULARISE <- FALSE   # TRUE = reject explosive draws (slower but fewer explosions)
 
 # OOS evaluation
 OOS_H      <- 1
@@ -198,11 +199,12 @@ if (USE_VECM) {
 
 bayesian_model <- bayesian_estimate_gvar(
   gvar_data,
-  n_draws   = BAYES_DRAWS,
-  lambda_1  = BAYES_LAMBDA1, lambda_2 = BAYES_LAMBDA2,
-  lambda_3  = BAYES_LAMBDA3, lambda_4 = BAYES_LAMBDA4,
-  rw_prior  = BAYES_RW, seed = 42,
-  deterministic = DETERMINISTIC
+  n_draws       = BAYES_DRAWS,
+  lambda_1      = BAYES_LAMBDA1, lambda_2 = BAYES_LAMBDA2,
+  lambda_3      = BAYES_LAMBDA3, lambda_4 = BAYES_LAMBDA4,
+  rw_prior      = BAYES_RW, seed = 42,
+  deterministic = DETERMINISTIC,
+  regularise    = BAYES_REGULARISE
 )
 message(sprintf("[Bayesian] %d / %d draws stable.",
                 bayesian_model$n_stable, bayesian_model$n_draws))

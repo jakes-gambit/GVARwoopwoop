@@ -265,12 +265,132 @@ ISO3_TO_IMF2 <- c(
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Source 4 : World Bank GDP (fallback when bilateral trade data unavailable)
+#   API: https://api.worldbank.org/v2/country/{iso2}/indicator/NY.GDP.MKTP.CD
+#   No API key required.  Constructs GDP-proportional weights: each country
+#   gives weight proportional to partner GDP (rough proxy for trade links).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ISO-3 → ISO-2 mapping for World Bank API
+ISO3_TO_ISO2 <- c(
+  USA="US", GBR="GB", DEU="DE", FRA="FR", ITA="IT", JPN="JP", CAN="CA",
+  AUS="AU", CHE="CH", SWE="SE", NOR="NO", KOR="KR", DNK="DK",
+  NLD="NL", BEL="BE", AUT="AT", ESP="ES", PRT="PT", GRC="GR",
+  IRL="IE", FIN="FI", POL="PL", CZE="CZ", HUN="HU", SVK="SK",
+  SVN="SI", ROU="RO", BGR="BG", HRV="HR", MEX="MX", BRA="BR",
+  ZAF="ZA", TUR="TR", RUS="RU", IND="IN", CHN="CN", IDN="ID",
+  EA ="XC"
+)
+
+.wb_gdp_weights <- function(countries, avg_years) {
+
+  if (!requireNamespace("httr",     quietly = TRUE) ||
+      !requireNamespace("jsonlite", quietly = TRUE)) {
+    message("  [Weights] httr/jsonlite not installed – skipping World Bank GDP.")
+    return(NULL)
+  }
+
+  cat("[Weights] Fetching GDP from World Bank API (GDP-proportional fallback)...\n")
+
+  iso2 <- ISO3_TO_ISO2[countries]
+  missing <- countries[is.na(iso2)]
+  if (length(missing) > 0)
+    message("  [Weights] No ISO-2 code for: ", paste(missing, collapse=", "),
+            " – these will get zero weight.")
+  iso2_valid <- iso2[!is.na(iso2)]
+  if (length(iso2_valid) == 0) return(NULL)
+
+  gdp_vals <- setNames(rep(NA_real_, length(countries)), countries)
+
+  for (i in seq_along(iso2_valid)) {
+    cc3   <- names(iso2_valid)[i]
+    cc2   <- iso2_valid[i]
+    url   <- sprintf(
+      "https://api.worldbank.org/v2/country/%s/indicator/NY.GDP.MKTP.CD?format=json&date=%d:%d&per_page=100",
+      cc2, min(avg_years), max(avg_years)
+    )
+    resp <- tryCatch(httr::GET(url, httr::timeout(20)), error = function(e) NULL)
+    if (is.null(resp) || httr::status_code(resp) != 200) {
+      message(sprintf("  [Weights] WB GDP failed for %s", cc3))
+      Sys.sleep(0.5)
+      next
+    }
+    parsed <- tryCatch(
+      jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"),
+                         simplifyVector = TRUE),
+      error = function(e) NULL
+    )
+    if (is.null(parsed) || length(parsed) < 2) next
+    data_df <- parsed[[2]]
+    if (is.null(data_df) || nrow(data_df) == 0) next
+    vals <- suppressWarnings(as.numeric(data_df$value))
+    vals <- vals[!is.na(vals) & is.finite(vals)]
+    if (length(vals) > 0)
+      gdp_vals[cc3] <- mean(vals)
+    Sys.sleep(0.3)
+  }
+
+  gdp_known <- gdp_vals[!is.na(gdp_vals) & gdp_vals > 0]
+  if (length(gdp_known) == 0) {
+    message("  [Weights] No GDP data retrieved from World Bank.")
+    return(NULL)
+  }
+
+  # GDP-proportional weight: w_ij = gdp_j / sum_{k≠i} gdp_k
+  N   <- length(countries)
+  W   <- matrix(0, N, N, dimnames = list(countries, countries))
+  for (i in seq_len(N)) {
+    for (j in seq_len(N)) {
+      if (i != j && !is.na(gdp_vals[countries[j]]) && gdp_vals[countries[j]] > 0)
+        W[i, j] <- gdp_vals[countries[j]]
+    }
+  }
+
+  covered <- mean(rowSums(W) > 0)
+  cat(sprintf("  WB GDP: %.0f%% of countries covered.\n", covered * 100))
+  .row_norm(W)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Source 5 : Hardcoded approximate GDP shares (last-resort fallback)
+#   Uses approximate 2015 GDP shares from World Bank/IMF data.
+#   Countries not in the table get equal weight among themselves.
+# ─────────────────────────────────────────────────────────────────────────────
+
+.APPROX_GDP_2015 <- c(
+  USA=18.1, CHN=11.1, JPN=4.4,  DEU=3.4,  GBR=2.9,  FRA=2.4,  IND=2.1,
+  ITA=1.8,  BRA=1.8,  CAN=1.6,  KOR=1.4,  AUS=1.2,  RUS=1.4,  ESP=1.2,
+  MEX=1.2,  IDN=0.9,  NLD=0.8,  TUR=0.8,  CHE=0.7,  SWE=0.6,  POL=0.5,
+  BEL=0.5,  AUT=0.4,  NOR=0.4,  ZAF=0.3,  IRL=0.3,  DNK=0.3,  PRT=0.2,
+  GRC=0.2,  FIN=0.2,  CZE=0.2,  HUN=0.1,  ROU=0.2,  BGR=0.06, HRV=0.05,
+  SVK=0.1,  SVN=0.05, EA=12.0
+)
+
+.hardcoded_gdp_weights <- function(countries) {
+  cat("[Weights] Using hardcoded approximate GDP shares (last resort).\n")
+  N   <- length(countries)
+  gdp <- .APPROX_GDP_2015[countries]
+  # Countries missing from table get median share
+  gdp[is.na(gdp)] <- median(.APPROX_GDP_2015, na.rm = TRUE)
+  names(gdp) <- countries
+
+  W <- matrix(0, N, N, dimnames = list(countries, countries))
+  for (i in seq_len(N)) {
+    for (j in seq_len(N)) {
+      if (i != j) W[i, j] <- gdp[countries[j]]
+    }
+  }
+  .row_norm(W)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
 #' Fetch empirical bilateral trade data and build a GVAR weight matrix.
 #'
-#' Tries OECD first, falls back to IMF DOTS.  Optionally blends with BIS
+#' Tries data sources in order: OECD → IMF DOTS → World Bank GDP →
+#' hardcoded approximate GDP shares.  Optionally blends with BIS
 #' financial-claims weights (set finance_alpha > 0 to activate).
 #'
 #' @param countries     ISO-3 character vector matching names(sim_data)
@@ -289,7 +409,7 @@ fetch_trade_weights <- function(countries,
   cat(sprintf("  Average window: %d–%d\n", min(avg_years), max(avg_years)))
   cat("══════════════════════════════════════════════════════════════\n")
 
-  # --- Trade weights (OECD → IMF DOTS) ---
+  # --- Trade weights: OECD → IMF DOTS → World Bank GDP → hardcoded ---
   W_trade <- .oecd_trade(countries, avg_years)
 
   if (is.null(W_trade)) {
@@ -297,8 +417,11 @@ fetch_trade_weights <- function(countries,
   }
 
   if (is.null(W_trade)) {
-    stop("[Weights] Could not retrieve bilateral trade data from OECD or IMF DOTS.\n",
-         "  Install the 'OECD' package or ensure internet access for the IMF API.")
+    W_trade <- .wb_gdp_weights(countries, avg_years)
+  }
+
+  if (is.null(W_trade)) {
+    W_trade <- .hardcoded_gdp_weights(countries)
   }
 
   # --- Optional financial-linkage blend ---
