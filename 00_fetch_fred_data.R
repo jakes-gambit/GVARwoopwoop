@@ -357,3 +357,165 @@ to_gvar_list <- function(df, var_cols, countries = NULL, min_obs = 60) {
 save(fred_data, to_gvar_list, file = "gvar_fred_data.RData")
 cat("\nSaved gvar_fred_data.RData  (fred_data + to_gvar_list)\n")
 cat("Note: Content generated using AI – expert verification recommended.\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7.  China (CHN) – Annual FRED data + Kalman temporal disaggregation
+#
+#  Several FRED series for China are only available at annual frequency or
+#  have reliable coverage only in annual form (e.g. World Bank vintage).
+#  This section:
+#    (a) Downloads annual FRED series for China.
+#    (b) Calls kalman_temporal_disaggregate() (from 08_kalman_filter.R) to
+#        produce quarterly estimates via a Kalman smoother.
+#    (c) Patches the CHN rows of fred_data with the disaggregated quarterly
+#        series where the original quarterly series is missing or sparse.
+#
+#  Annual FRED series used
+#  -----------------------
+#  GDP (real, constant 2015 USD, OECD):  NAEXKP01CNA189S
+#    – If unavailable, fall back to RGDPCNA (OECD annual real GDP index)
+#  CPI (annual average, OECD MEI):       CPALTT01CNA661S
+#    – If unavailable, fall back to averaging the monthly CHNCPIALLMINMEI
+#  Long-run rate (annual):               IRLTLT01CNA156N
+#  REER (annual average, OECD MEI):      CCRETT01CNA661N
+#
+#  NOTE: Series IDs and availability may change.  The code wraps each fetch
+#  in tryCatch and silently skips unavailable series.
+# ─────────────────────────────────────────────────────────────────────────────
+
+source("08_kalman_filter.R")   # for kalman_temporal_disaggregate()
+
+chn_annual_series <- list(
+  gdp     = "NAEXKP01CNA189S",   # real GDP index, 2015=100, annual (OECD)
+  cpi     = "CPALTT01CNA661S",   # CPI all items, annual average (OECD MEI)
+  lt_rate = "IRLTLT01CNA156N",   # 10-yr bond yield, annual (OECD MEI)
+  reer    = "CCRETT01CNA661N"    # REER, annual average (OECD MEI)
+)
+
+cat("\nFetching annual China (CHN) series from FRED...\n")
+
+fetch_annual <- function(series_id) {
+  tryCatch({
+    df <- fredr(series_id,
+                observation_start = as.Date(start_date),
+                observation_end   = as.Date(end_date),
+                frequency         = "a")
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    Sys.sleep(0.15)
+    df[, c("date", "value")]
+  }, error = function(e) {
+    message(sprintf("  [CHN annual] Could not fetch %s: %s", series_id, conditionMessage(e)))
+    NULL
+  })
+}
+
+chn_annual_raw <- lapply(names(chn_annual_series), function(v) {
+  cat(sprintf("  %-8s (%s) ...", v, chn_annual_series[[v]]))
+  df <- fetch_annual(chn_annual_series[[v]])
+  if (is.null(df)) { cat(" SKIPPED\n"); return(NULL) }
+  cat(sprintf(" OK (%d years)\n", nrow(df)))
+  colnames(df)[2] <- v
+  df
+})
+names(chn_annual_raw) <- names(chn_annual_series)
+
+# For each successfully fetched annual series, disaggregate to quarterly
+chn_quarterly_disagg <- list()
+
+for (v in names(chn_annual_raw)) {
+  ann_df <- chn_annual_raw[[v]]
+  if (is.null(ann_df) || sum(!is.na(ann_df[[v]])) < 5) next
+
+  # Extract complete years
+  ann_df   <- ann_df[!is.na(ann_df[[v]]), ]
+  years    <- as.integer(format(ann_df$date, "%Y"))
+  ann_vals <- ann_df[[v]]
+  n_yrs    <- length(years)
+
+  cat(sprintf("  Disaggregating %s: %d annual obs [%d–%d] ...",
+              v, n_yrs, min(years), max(years)))
+
+  agg_type <- if (v %in% c("lt_rate", "reer")) "average" else "average"
+
+  res <- tryCatch(
+    kalman_temporal_disaggregate(
+      annual_values = ann_vals,
+      n_years       = n_yrs,
+      start_year    = min(years),
+      aggregation   = agg_type
+    ),
+    error = function(e) {
+      message(sprintf("  [CHN disagg] %s failed: %s", v, conditionMessage(e)))
+      NULL
+    }
+  )
+
+  if (!is.null(res)) {
+    cat(sprintf(" OK (%d quarterly obs)\n", length(res$quarterly)))
+    chn_quarterly_disagg[[v]] <- res$quarterly
+  } else {
+    cat(" FAILED\n")
+  }
+}
+
+# ── Patch fred_data for CHN rows where quarterly is NA/missing ──────────────
+if (length(chn_quarterly_disagg) > 0) {
+
+  # Helper: convert "YYYY-QN" label to the first date of that quarter
+  qtr_to_date <- function(lbl) {
+    yr  <- as.integer(sub("-Q.*", "", lbl))
+    q   <- as.integer(sub(".*-Q", "", lbl))
+    as.Date(sprintf("%d-%02d-01", yr, (q - 1L) * 3L + 1L))
+  }
+
+  for (v in names(chn_quarterly_disagg)) {
+    qtr_series <- chn_quarterly_disagg[[v]]
+    qtr_dates  <- as.Date(sapply(names(qtr_series), qtr_to_date))
+
+    # Map variable name to the fred_data column(s) to patch
+    col_map <- list(
+      gdp     = c("gdp", "gdp_level", "gdp_log", "gdp_logdiff"),
+      cpi     = c("cpi", "cpi_level", "cpi_log", "cpi_logdiff"),
+      lt_rate = "lt_rate",
+      reer    = c("reer", "reer_level", "reer_log", "reer_logdiff")
+    )
+
+    level_col <- switch(v, gdp = "gdp", cpi = "cpi", lt_rate = "lt_rate", reer = "reer")
+
+    for (qi in seq_along(qtr_series)) {
+      dt   <- qtr_dates[qi]
+      rows <- which(fred_data$country == "CHN" & fred_data$date == dt)
+      if (length(rows) == 0) {
+        # Insert a new row for this country-date if needed
+        next   # skip for now; merging new rows is handled below
+      }
+      for (r in rows) {
+        # Only patch if the existing value is NA
+        if (is.na(fred_data[r, level_col])) {
+          fred_data[r, level_col] <- qtr_series[qi]
+        }
+      }
+    }
+
+    # Recompute log and logdiff for the patched level column
+    chn_idx <- which(fred_data$country == "CHN")
+    if (length(chn_idx) > 0 && level_col %in% colnames(fred_data)) {
+      lvl <- fred_data[chn_idx, level_col]
+      if (paste0(v, "_log") %in% colnames(fred_data)) {
+        fred_data[chn_idx, paste0(v, "_log")] <- log(lvl)
+      }
+      if (paste0(v, "_logdiff") %in% colnames(fred_data)) {
+        ld_vals <- c(NA_real_, diff(log(lvl)))
+        fred_data[chn_idx, paste0(v, "_logdiff")] <- ld_vals
+      }
+    }
+    cat(sprintf("  [CHN patch] %s patched in fred_data.\n", v))
+  }
+
+  # Re-save with patched data
+  save(fred_data, to_gvar_list, file = "gvar_fred_data.RData")
+  cat("\nRe-saved gvar_fred_data.RData with CHN disaggregated quarterly data.\n")
+} else {
+  cat("\n[CHN annual] No series successfully disaggregated; fred_data unchanged.\n")
+}

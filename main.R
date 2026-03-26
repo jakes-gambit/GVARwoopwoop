@@ -82,12 +82,6 @@ IRF_HORIZON <- 20
 IRF_BOOT    <- 2000
 IRF_CI      <- 0.95
 
-# Local Projections
-LP_HORIZON  <- 20         # max horizon for LP-IRFs
-LP_N_LAGS   <- 1          # number of control lags in each LP regression
-LP_CI       <- 0.95       # confidence level (Newey-West HAC bands)
-LP_BOOT     <- 500        # bootstrap reps (set 0 to skip bootstrap)
-
 # Cointegration (Johansen)
 COINT_K    <- 2
 COINT_DET  <- "const"
@@ -199,7 +193,8 @@ gvar_data <- prepare_gvar_dataset(
 
 if (USE_VECM) {
   gvar_model <- estimate_gvecm(gvar_data, rank_vec = coint_results$rank_vec,
-                                ecdet = COINT_DET, deterministic = DETERMINISTIC)
+                                ecdet = COINT_DET, deterministic = DETERMINISTIC,
+                                ridge_lambda = RIDGE_LAMBDA)
 } else {
   gvar_model <- estimate_gvar(gvar_data,
                                deterministic = DETERMINISTIC,
@@ -258,28 +253,32 @@ compare_kf_wz(cf_kf, cf_wz)
 
 
 ###############################################################################
-# 10.  LOCAL PROJECTIONS  (Jordà 2005)
+# 10.  VARIABLE RECOVERY
+#       Convert model-space outputs (logdiffs, log-levels) back to
+#       interpretable economic variables:
+#         *_logdiff  → annualised % growth  (× 400 for quarterly)
+#         *_log      → index level          (exp of log)
+#         rates      → pass-through in % p.a.
 ###############################################################################
 
-# ── 10a. Analytic LP-IRFs with Newey-West HAC bands ──────────────────────────
-lp_result <- lp_gvar(gvar_model, shock_var,
-                      data_list = sim_data,
-                      n_lags    = LP_N_LAGS,
-                      horizon   = LP_HORIZON,
-                      ci_level  = LP_CI)
+# Build log-base levels from the last observation in each series
+log_bases <- last_observed_levels(sim_data)
 
-plot_lp_irf(lp_result, shock_label = shock_var)
+# Conditional forecast in economic space  (Kalman filter path)
+econ_cf_kf <- recover_economic_variables(
+  cf_kf$forecast_mean,
+  freq          = "quarterly",
+  log_base_list = log_bases
+)
+message("[Recovery] Conditional forecast (KF) in economic variables:")
+print(subset(econ_cf_kf, grepl("gdp_logdiff|cpi_logdiff|reer_log|lt_rate", variable)))
 
-# ── 10b. Bootstrap LP-IRFs (wild bootstrap) ───────────────────────────────────
-if (LP_BOOT > 0) {
-  lp_boot <- bootstrap_lp(gvar_model, shock_var,
-                           data_list = sim_data,
-                           n_lags    = LP_N_LAGS,
-                           horizon   = LP_HORIZON,
-                           n_boot    = LP_BOOT,
-                           ci_level  = LP_CI)
-  plot_lp_irf(lp_boot, shock_label = paste0(shock_var, " (Bootstrap LP)"))
+# Unconditional (WZ mean) in economic space
+econ_cf_wz <- recover_economic_variables(
+  cf_wz$gibbs$mean,
+  freq          = "quarterly",
+  log_base_list = log_bases
+)
 
-  # ── 10c. Compare LP vs VAR-GIRF ──────────────────────────────────────────
-  compare_lp_girf(lp_boot, irf_freq, shock_label = shock_var)
-}
+message("[Recovery] Conditional forecast (WZ) in economic variables:")
+print(subset(econ_cf_wz, grepl("gdp_logdiff|cpi_logdiff|reer_log|lt_rate", variable)))
