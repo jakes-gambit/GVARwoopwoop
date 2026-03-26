@@ -17,7 +17,7 @@
 
 # ── 0. Source all modules ────────────────────────────────────────────────────
 
-setwd("C:/Users/WZHJEAB/Desktop/Conditional Forecasting 2/")   # adjust path
+# setwd("C:/Users/WZHJEAB/Desktop/Conditional Forecasting 2/")   # adjust path
 
 source("01_utils.R")
 source("02_data_preparation.R")
@@ -41,29 +41,28 @@ library(dplyr)
 ###############################################################################
 
 # Countries to include (must be present in fred_data)
-COUNTRIES <- c("USA", "DEU", "FRA")
+COUNTRIES <- c("USA", "DEU", "JPN", "FRA", "ITA")
 
 # Domestic variables to use in each country's VARX*.
 # Pick column names from fred_data (level / log / logdiff transformations).
 # Stationary variables preferred: logdiff for GDP/CPI/REER/EQ, levels for rates.
-DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "rho_l", "reer_log", "eq_real_log")
+DOMESTIC_VARS <- c("gdp_log", "cpi_logdiff", "rho_lms", "reer_log", "eq_log")
 
 # Global variable(s): enter as exogenous for all non-dominant units.
-# All variables listed in GLOBAL_VAR_NAMES must exist as columns in sim_data
-# (i.e. be present in all units after to_gvar_list / renaming).
+# All variables listed in GLOBAL_VAR_NAMES must exist as columns in sim_data.
 #
 # OIL_VAR options:  "oil_level"   – price in $/barrel (I(1), use with caution)
 #                   "oil_log"     – log price level    (I(1))
 #                   "oil_logdiff" – quarterly log-change (stationary)
+#                   "oil_diff"    – custom name used here
 #
-# To add a second global variable (e.g. a commodity index):
-#   1. Add its column to fred_data and to_gvar_list / sim_data
-#   2. Add the column name to GLOBAL_VAR_NAMES, e.g. c("oil", "comm_logdiff")
-OIL_VAR          <- "oil_logdiff"
+# To add a second global variable, extend GLOBAL_VAR_NAMES:
+#   e.g. c("oil", "comm_logdiff")  — both must be columns in sim_data
+OIL_VAR          <- "oil_diff"
 OIL_DOM_UNIT     <- "USA"       # country where oil is endogenous
 GLOBAL_VAR_NAMES <- c("oil")    # extend to c("oil","other_global") for multiples
 GLOBAL_DOM_UNIT  <- OIL_DOM_UNIT
-GLOBAL_D_LAG     <- 1           # lags for the global exogenous channel
+GLOBAL_D_LAG     <- 1           # lags for global exogenous channel
 
 # Lags
 MAX_P         <- 4        # max domestic lags for AIC/BIC search
@@ -74,7 +73,7 @@ LAG_CRITERION <- "bic"
 DETERMINISTIC <- "intercept"
 
 # COVID dummies: pulse dummies for specified quarters (set to NULL to disable)
-COVID_DUMMIES <- c("2020-Q1", "2020-Q2")   # set NULL to turn off
+COVID_DUMMIES <-c("2020-Q1", "2020-Q2")   # set NULL to turn off
 
 # ── Ridge regularisation ──────────────────────────────────────────────────────
 # Set RIDGE_LAMBDA > 0 to apply ridge (L2) shrinkage to the frequentist VAR.
@@ -88,8 +87,8 @@ OOS_H      <- 1
 OOS_T0_FRAC <- 0.70
 
 # IRF
-IRF_HORIZON <- 20
-IRF_BOOT    <- 2000
+IRF_HORIZON <- 200
+IRF_BOOT    <- 0
 IRF_CI      <- 0.95
 
 # Cointegration (Johansen)
@@ -147,9 +146,9 @@ covid_dummies <-
   }
 
 
-# Bilateral trade weight matrix from empirical data
+# # Bilateral trade weight matrix from empirical data
 W_raw <- fetch_trade_weights(COUNTRIES, avg_years = WEIGHT_YEARS,
-                              finance_alpha = WEIGHT_FIN_ALPHA)
+                               finance_alpha = WEIGHT_FIN_ALPHA)
 
 # Global variable config (supports multiple globals via GLOBAL_VAR_NAMES vector)
 GLOBAL_VARS <- list(var_names     = GLOBAL_VAR_NAMES,
@@ -232,8 +231,8 @@ if (RIDGE_LAMBDA > 0) {
 
 ###############################################################################
 #  6b.  EIGENVALUE DIAGNOSTICS
-#        Print sorted eigenvalues for each individual country model and for the
-#        global companion matrix.  Max modulus < 1 ↔ model stability.
+#        Individual country companion eigenvalues + global companion eigenvalues.
+#        Max modulus < 1 ↔ model stability.  Prints top N sorted by modulus.
 ###############################################################################
 
 cat("\n", strrep("=", 70), "\n", sep = "")
@@ -267,10 +266,10 @@ diag_results <- run_all_diagnostics(
 #  8.  IMPULSE RESPONSES  (VAR-based GIRF)
 ###############################################################################
 
-shock_var <- paste0(COUNTRIES[1], ".gdp_logdiff")
+shock_var <- paste0(COUNTRIES[1], ".gdp_log")
 
 irf_freq <- bootstrap_girf(gvar_model, shock_var,
-                            horizon = IRF_HORIZON, n_boot = IRF_BOOT,
+                            horizon = 20, n_boot = IRF_BOOT,
                             ci_level = IRF_CI)
 plot_irf(irf_freq, shock_label = shock_var)
 
@@ -280,20 +279,20 @@ plot_irf(irf_freq, shock_label = shock_var)
 ###############################################################################
 
 conditions <- data.frame(
-  variable  = rep(paste0(COUNTRIES[1], ".gdp_logdiff"), 3),
-  horizon   = 1:3,
-  value     = c(-0.03, -0.04, -0.01),
+  variable  = rep(paste0(COUNTRIES[1], ".oil"), 20),
+  horizon   = 1:20,
+  value     = rep(12,20),
   type      = "hard",
   tolerance = 0
 )
 
 # ── 9a. Kalman filter ────────────────────────────────────────────────────────
-cf_kf <- conditional_forecast(gvar_model, conditions, max_h = 8,
-                               data_list = sim_data, ci_level = 0.95)
+cf_kf <- conditional_forecast(gvar_model, conditions, max_h = 20,
+                               data_list = sim_data, ci_level = 0)
 plot_conditional_forecast(cf_kf)
 
 # ── 9b. Waggoner & Zha ───────────────────────────────────────────────────────
-cf_wz <- conditional_forecast_wz(gvar_model, conditions, max_h = 8,
+cf_wz <- conditional_forecast_wz(gvar_model, conditions, max_h = 20,
                                   data_list = sim_data, n_draws = 2000,
                                   ci_level = 0.95)
 plot_conditional_forecast_wz(cf_wz, show_uncond = TRUE)
@@ -304,38 +303,28 @@ compare_kf_wz(cf_kf, cf_wz)
 ###############################################################################
 # 10.  VARIABLE RECOVERY
 #
-#  Converts model-space matrices back to interpretable economic units:
-#
-#    *_logdiff  → GDP growth / inflation / REER growth / EQ growth (% p.a.)
-#    rho_s/rho_l→ short / long interest rate (% p.a.)
-#    *_log      → index level (REER, real equity price, GDP index)
-#
+#  Converts model-space matrices to interpretable economic units.
 #  Two contexts are distinguished:
-#    "forecast"  – absolute level recovery for *_log; exact back-transform
-#                  (exp(4ρ)−1)·100 for rates.  Applied to KF and WZ paths.
-#    "irf"       – approximate % change for *_log (×100); linearised Δ% p.a.
-#                  for rates (×400); quarterly % change for *_logdiff (×100).
+#    "forecast" – level recovery for *_log, exact rho→% p.a., ×400 for logdiffs
+#    "irf"      – % change (×100) for *_log, Δ% p.a. (×400) for rho, ×100 for logdiffs
 #
-#  Covered outputs: IRFs, KF conditional forecast, WZ conditional forecast.
+#  Covered: IRF point responses, KF conditional forecast, WZ conditional forecast.
 ###############################################################################
 
-# Last observed levels — used to recover absolute *_log levels in forecasts
+# Last observed levels — needed for absolute *_log level recovery in forecasts
 log_bases <- last_observed_levels(sim_data)
 
-# Pattern matching all domestic + global variables of interest
-ALL_VARS_PATTERN <- paste(
-  c(DOMESTIC_VARS, GLOBAL_VARS$var_names),
-  collapse = "|"
-)
+# Pattern to filter the print output to variables of interest
+ALL_VARS_PATTERN <- paste(c(DOMESTIC_VARS, GLOBAL_VARS$var_names), collapse = "|")
 
 # ── 10a. IRF recovery ────────────────────────────────────────────────────────
 econ_irf <- recover_economic_variables(
   irf_freq$point,
   freq          = "quarterly",
-  log_base_list = NULL,      # no base needed for IRF % changes
+  log_base_list = NULL,    # no base needed for % change IRF responses
   context       = "irf"
 )
-message("\n[Recovery] IRF responses in economic units (shock: ", shock_var, "):")
+message("\n[Recovery] IRF responses (shock: ", shock_var, ") in economic units:")
 print(subset(econ_irf, grepl(ALL_VARS_PATTERN, variable)))
 
 # ── 10b. Conditional forecast – Kalman filter ────────────────────────────────
@@ -358,11 +347,10 @@ econ_cf_wz <- recover_economic_variables(
 message("\n[Recovery] Conditional forecast (WZ) in economic units:")
 print(subset(econ_cf_wz, grepl(ALL_VARS_PATTERN, variable)))
 
-# Convenience: wide tables for each output (one row per horizon, one col per unit.var)
+# Wide-format convenience tables (one row per horizon, one column per unit.var)
 spread_econ <- function(df) {
   stats::reshape(df[, c("variable", "period", "econ_value")],
-                 idvar = "period", timevar = "variable",
-                 direction = "wide")
+                 idvar = "period", timevar = "variable", direction = "wide")
 }
 econ_irf_wide   <- spread_econ(econ_irf)
 econ_cf_kf_wide <- spread_econ(econ_cf_kf)
