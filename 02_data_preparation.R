@@ -297,7 +297,8 @@ compute_star_vars <- function(data_list, W, global_var_names = NULL) {
 #' @param q_lag     Integer; number of foreign lags (excluding contemporaneous)
 #' @return          List with Y (dependent), X (regressors), and metadata
 prepare_country_data <- function(domestic, star, p_lag, q_lag,
-                                 global_exog = NULL, d_lag = NULL) {
+                                 global_exog   = NULL, d_lag = NULL,
+                                 covid_dummies = NULL) {  # [NEW] crisis dummies
   
   domestic <- as.matrix(domestic)
   star     <- as.matrix(star)
@@ -357,20 +358,103 @@ prepare_country_data <- function(domestic, star, p_lag, q_lag,
       X_parts[[paste0("global_lag", l)]] <- block
     }
   }
-  
+
+  # [NEW] (e) Contemporaneous COVID / crisis dummy variables
+  # Dummies enter without lagging — they are outlier/pulse controls, not
+  # dynamic regressors.  They are added last so existing coefficient indexing
+  # (for stars and globals) is unchanged.
+  k_dummy <- 0
+  if (!is.null(covid_dummies)) {
+    covid_dummies <- as.matrix(covid_dummies)
+    if (nrow(covid_dummies) != TT)
+      stop("covid_dummies row count (", nrow(covid_dummies), ") != TT (", TT, ").")
+    dummy_block <- covid_dummies[(max_lag + 1):TT, , drop = FALSE]
+    X_parts[["covid_dummies"]] <- dummy_block
+    k_dummy <- ncol(covid_dummies)
+  }
+
   X <- do.call(cbind, X_parts)
-  
+
   return(list(
     Y        = Y,
     X        = X,
     k_dom    = k_dom,
     k_star   = k_star,
     k_global = k_global,
+    k_dummy  = k_dummy,    # [NEW] number of dummy columns
     p_lag    = p_lag,
     q_lag    = q_lag,
     d_lag    = d_lag,
     n_eff    = n_eff
   ))
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 4b.  [NEW] COVID / Crisis Dummy Construction
+#      Creates impulse and step dummies for the COVID-19 episode (or any crisis)
+#      that can be added as exogenous regressors to control for extreme outliers.
+#      Dummies are aligned to the same row names as data_list matrices.
+# ───────────────────────────────────────────────────────────────────────────────
+
+#' Build a matrix of crisis dummy variables.
+#'
+#' Two types of dummies are generated:
+#'   - "pulse"     : 1 in a specific quarter, 0 elsewhere  (outlier correction)
+#'   - "step"      : 1 from a quarter onward               (permanent shift)
+#'
+#' The default specification matches COVID-19: a pulse for the two worst
+#' quarters (2020-Q1, 2020-Q2) and a recovery pulse for 2020-Q3.
+#' All periods are matched against the row names of the data matrices,
+#' which follow the "YYYY-QN" format produced by 00_fetch_fred_data.R.
+#'
+#' @param date_labels   Character vector of "YYYY-QN" labels (= rownames of a
+#'                      data_list matrix).  Must cover all crisis periods.
+#' @param pulse_periods Character vector of "YYYY-QN" quarters that receive a
+#'                      pulse dummy (default: 2020-Q1 and 2020-Q2).
+#' @param step_periods  Named list; each element is a "YYYY-QN" start date for
+#'                      a step dummy.  Name becomes the column name.
+#'                      (default: NULL – no step dummies)
+#' @return  T × (n_pulse + n_step) numeric matrix; colnames indicate the type
+make_covid_dummies <- function(date_labels,
+                               pulse_periods = c("2020-Q1", "2020-Q2"),
+                               step_periods  = NULL) {
+
+  T <- length(date_labels)
+  dummies <- list()
+
+  # ── Pulse dummies: 1 exactly at the specified quarter ──────────────────────
+  for (qtr in pulse_periods) {
+    d <- as.integer(date_labels == qtr)     # 1 if match, 0 otherwise
+    if (sum(d) == 0) {
+      message(sprintf("[COVID dummy] Pulse period '%s' not found in date labels – skipped.", qtr))
+    }
+    col_nm <- paste0("d_", gsub("-", "_", qtr))   # e.g. "d_2020_Q1"
+    dummies[[col_nm]] <- d
+  }
+
+  # ── Step dummies: 1 from the start quarter onward ──────────────────────────
+  if (!is.null(step_periods)) {
+    for (nm in names(step_periods)) {
+      start_qtr <- step_periods[[nm]]
+      d <- as.integer(date_labels >= start_qtr)
+      if (sum(d) == 0) {
+        message(sprintf("[COVID dummy] Step period '%s' not found – skipped.", start_qtr))
+      }
+      dummies[[nm]] <- d
+    }
+  }
+
+  if (length(dummies) == 0) {
+    message("[COVID dummy] No valid dummy periods – returning NULL.")
+    return(NULL)
+  }
+
+  D <- do.call(cbind, dummies)
+  rownames(D) <- date_labels
+  message(sprintf("[COVID dummy] Created %d dummy column(s): %s",
+                  ncol(D), paste(colnames(D), collapse = ", ")))
+  return(D)
 }
 
 
@@ -381,21 +465,28 @@ prepare_country_data <- function(domestic, star, p_lag, q_lag,
 #' Prepare the full GVAR dataset: validate, build stars, assemble per-unit
 #' regression data.
 #'
-#' @param data_list   Named list of T × k_i matrices
-#' @param weights     N × N raw weight matrix
-#' @param p_lag       Integer or named integer vector of domestic lag orders
-#' @param q_lag       Integer or named integer vector of foreign lag orders
-#' @param freq        "quarterly" or "yearly"
-#' @return            A list with:
+#' @param data_list       Named list of T × k_i matrices
+#' @param weights         N × N raw weight matrix
+#' @param p_lag           Integer or named integer vector of domestic lag orders
+#' @param q_lag           Integer or named integer vector of foreign lag orders
+#' @param freq            "quarterly" or "yearly"
+#' @param covid_dummies   [NEW] Optional T × d matrix of crisis dummies (from
+#'                        make_covid_dummies()).  When supplied, the dummies are
+#'                        appended to every unit's regressor matrix as
+#'                        contemporaneous exogenous controls (no extra lags).
+#'                        Set to NULL to disable (default).
+#' @return                A list with:
 #'   \item{unit_data}{Named list – one element per unit with Y, X, etc.}
 #'   \item{star_list}{Named list of star-variable matrices}
 #'   \item{W}{Row-normalised weight matrix}
 #'   \item{unit_names}{Character vector of unit names}
 #'   \item{freq}{Frequency string}
+#'   \item{covid_dummies}{The dummy matrix passed in (or NULL)}
 prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
                                  freq = "quarterly",
-                                 global_vars = NULL,
-                                 deterministic = "intercept") {
+                                 global_vars    = NULL,
+                                 deterministic  = "intercept",
+                                 covid_dummies  = NULL) {   # [NEW] crisis dummies
   
   # Step 1: validate
   validate_gvar_data(data_list, weights, freq)
@@ -446,6 +537,17 @@ prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
   if (length(p_lag) == 1) p_lag <- setNames(rep(p_lag, N), unit_names)
   if (length(q_lag) == 1) q_lag <- setNames(rep(q_lag, N), unit_names)
   
+  # [NEW] Step 4b: validate and align COVID dummies if provided
+  if (!is.null(covid_dummies)) {
+    covid_dummies <- as.matrix(covid_dummies)
+    T_first <- nrow(data_list[[unit_names[1]]])
+    if (nrow(covid_dummies) != T_first)
+      stop("covid_dummies must have the same number of rows (T) as the data matrices. ",
+           "Got ", nrow(covid_dummies), " vs ", T_first, ".")
+    message(sprintf("[GVAR] COVID dummies included: %s",
+                    paste(colnames(covid_dummies), collapse = ", ")))
+  }
+
   # Step 5: assemble per-unit regression datasets
   unit_data <- setNames(vector("list", N), unit_names)
   for (u in unit_names) {
@@ -453,11 +555,11 @@ prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
     g_exog <- NULL
     g_d_lag <- NULL
     dom_u <- data_list[[u]]
-    
+
     if (!is.null(global_config) && u != global_config$dominant_unit) {
       g_exog  <- global_config$global_series
       g_d_lag <- global_config$d_lag
-      
+
       # Remove global variables from domestic set for non-dominant units.
       # The global variable enters only through the exogenous channel;
       # keeping it in domestic would create (near-)perfect collinearity
@@ -469,17 +571,18 @@ prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
         dom_u <- dom_u[, !(colnames(dom_u) %in% gv_in_dom), drop = FALSE]
       }
     }
-    
+
     unit_data[[u]] <- prepare_country_data(
-      domestic    = dom_u,
-      star        = star_list[[u]],
-      p_lag       = p_lag[u],
-      q_lag       = q_lag[u],
-      global_exog = g_exog,
-      d_lag       = g_d_lag
+      domestic      = dom_u,
+      star          = star_list[[u]],
+      p_lag         = p_lag[u],
+      q_lag         = q_lag[u],
+      global_exog   = g_exog,
+      d_lag         = g_d_lag,
+      covid_dummies = covid_dummies   # [NEW] pass dummies into each unit
     )
   }
-  
+
   message("[GVAR] Dataset preparation complete.")
   return(list(
     unit_data     = unit_data,
@@ -488,6 +591,7 @@ prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
     unit_names    = unit_names,
     freq          = freq,
     global_config = global_config,
-    deterministic = deterministic
+    deterministic = deterministic,
+    covid_dummies = covid_dummies     # [NEW] stored for downstream reference
   ))
 }

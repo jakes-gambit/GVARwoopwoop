@@ -694,6 +694,107 @@ plot_bayesian_eigenvalue_distribution <- function(bayesian_gvar) {
 
 
 # ───────────────────────────────────────────────────────────────────────────────
+# 13b.  [NEW] Bayesian OOS Forecast Plot
+#        Plots actual vs h-step OOS forecast for selected variables,
+#        shading the evaluation window to highlight the OOS period.
+# ───────────────────────────────────────────────────────────────────────────────
+
+#' Plot out-of-sample forecast vs actual for the Bayesian posterior mean.
+#'
+#' Wraps plot_forecast_performance() (from 06_diagnostics.R) and additionally
+#' prints an RMSE table.  The OOS window is shaded in the time-series panel.
+#'
+#' @param oos_result  Output from bayesian_oos_forecast() (or recursive_oos_forecast())
+#' @param oos_eval    Output from bayesian_oos_evaluation() (optional, for table)
+#' @param variables   Character vector of variable names to plot (NULL = first 6)
+#' @param max_vars    Maximum variables per plot page
+#' @return            Invisible NULL; plots printed as side effect
+plot_bayesian_oos <- function(oos_result, oos_eval = NULL,
+                               variables = NULL, max_vars = 6) {
+
+  if (is.null(oos_result)) {
+    message("[Bayesian OOS Plot] No OOS result provided – skipping.")
+    return(invisible(NULL))
+  }
+
+  forecasts <- oos_result$forecasts
+  actuals   <- oos_result$actuals
+  dates     <- oos_result$dates
+  h         <- oos_result$h
+  var_names <- colnames(forecasts)
+
+  if (is.null(variables)) {
+    variables <- var_names[1:min(max_vars, length(var_names))]
+  }
+
+  # Print OOS evaluation table if provided
+  if (!is.null(oos_eval)) {
+    cat("\n  Bayesian OOS Evaluation (posterior mean model):\n")
+    print(oos_eval[oos_eval$variable %in% variables, ], row.names = FALSE)
+    cat("\n")
+  }
+
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+
+  for (v in variables) {
+    idx <- which(var_names == v)
+    if (length(idx) == 0) next
+
+    fc  <- forecasts[, idx]
+    ac  <- actuals[, idx]
+    err <- ac - fc
+
+    if (all(is.na(fc)) || all(is.na(ac))) next
+
+    # Two-panel layout: forecast vs actual (left) + errors (right)
+    par(mfrow = c(1, 2), mar = c(4, 4, 3, 1), oma = c(0, 0, 2.5, 0))
+
+    # ── Left panel: actual vs forecast time series ──────────────────────────
+    ylim <- range(c(fc, ac), na.rm = TRUE, finite = TRUE)
+    if (!all(is.finite(ylim))) ylim <- c(-1, 1)
+
+    plot(dates, ac, type = "l", col = "black", lwd = 1.8,
+         xlab = "OOS Time Index", ylab = "Value",
+         main = paste0("Actual vs Forecast (h=", h, ")"),
+         ylim = ylim)
+
+    # Shade the entire OOS window light blue
+    x_poly <- c(min(dates), max(dates), max(dates), min(dates))
+    y_poly <- c(ylim[1], ylim[1], ylim[2], ylim[2])
+    polygon(x_poly, y_poly, col = rgb(0.53, 0.81, 0.98, 0.15), border = NA)
+
+    lines(dates, ac, col = "black", lwd = 1.8)           # re-draw on top
+    lines(dates, fc, col = "steelblue", lwd = 1.5, lty = 2)
+    legend("topright",
+           legend = c("Actual", paste0(h, "-step Forecast (Bayes)")),
+           col    = c("black", "steelblue"),
+           lty    = c(1, 2), lwd = 1.5, bty = "n", cex = 0.8)
+
+    # ── Right panel: forecast errors ─────────────────────────────────────────
+    err_cols <- ifelse(is.na(err), "gray",
+                       ifelse(err >= 0, "darkgreen", "tomato"))
+    plot(dates, err, type = "h", col = err_cols,
+         xlab = "OOS Time Index", ylab = "Forecast Error",
+         main = "Forecast Errors", lwd = 2)
+    abline(h = 0, col = "gray50", lty = 2)
+
+    # RMSE annotation
+    rmse_v <- sqrt(mean(err^2, na.rm = TRUE))
+    mae_v  <- mean(abs(err),   na.rm = TRUE)
+    legend("topright",
+           legend = c(sprintf("RMSE = %.4f", rmse_v),
+                      sprintf("MAE  = %.4f", mae_v)),
+           bty = "n", cex = 0.85)
+
+    mtext(paste0("Bayesian OOS: ", v), outer = TRUE, cex = 1.2, font = 2)
+  }
+
+  invisible(NULL)
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────────
 # 14. Master Bayesian Diagnostics Runner
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -775,7 +876,7 @@ run_bayesian_all_diagnostics <- function(bayesian_gvar, gvar_data,
 
   # ---- 5. Plots ----
   if (plot) {
-    message("\n  [5/5] Generating diagnostic plots ...")
+    message("\n  [5/6] Generating diagnostic plots ...")
 
     # Residual diagnostics
     tryCatch(
@@ -806,6 +907,15 @@ run_bayesian_all_diagnostics <- function(bayesian_gvar, gvar_data,
       plot_bayesian_cusum(bayesian_gvar),
       error = function(e) message("  [Warning] CUSUM plot failed: ", e$message)
     )
+
+    # [NEW] OOS forecast plots (actual vs forecast + error bars)
+    message("\n  [6/6] Generating OOS forecast plots ...")
+    if (!is.null(results$oos_forecast)) {
+      tryCatch(
+        plot_bayesian_oos(results$oos_forecast, oos_eval = results$oos_eval),
+        error = function(e) message("  [Warning] OOS plot failed: ", e$message)
+      )
+    }
   }
 
   message("\n[Bayesian Diagnostics] Complete.")

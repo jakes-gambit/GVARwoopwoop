@@ -116,6 +116,37 @@ COINT_K       <- 2          # VAR lags for Johansen procedure
 COINT_ECDET   <- "const"    # deterministic specification
 COINT_SIG     <- 0.05       # significance level
 
+# ── [NEW] COVID / Crisis Dummy Settings ───────────────────────────────────────
+# Toggle COVID dummies on/off.  When TRUE, pulse dummies are created for each
+# quarter in COVID_PULSE_PERIODS and appended to every unit's regressor matrix.
+# This prevents the extreme 2020 outliers from distorting parameter estimates
+# and residual-based diagnostics.
+#
+# To disable: set USE_COVID_DUMMIES <- FALSE
+USE_COVID_DUMMIES  <- TRUE
+
+# Quarters that receive a pulse dummy (1 in that quarter, 0 elsewhere)
+COVID_PULSE_PERIODS <- c("2020-Q1", "2020-Q2")   # sharpest GDP contractions
+
+# Optional named list for step dummies (NULL = none):
+# e.g. list(d_post_covid = "2021-Q1") adds a permanent shift dummy from 2021-Q1
+COVID_STEP_PERIODS  <- NULL
+
+# ── [NEW] Oil Price Transformation ────────────────────────────────────────────
+# Choose how oil prices enter the GVAR.  The instability in the dominant-unit
+# model is partly driven by extreme oil-price movements; alternative
+# transformations can reduce this.
+#
+# Options (all refer to Brent crude quarterly observations):
+#   "yoy"      – year-over-year % growth          (existing default)
+#   "level"    – price level in $/barrel           (non-stationary, use with care)
+#   "log"      – log of price level               (non-stationary, use with care)
+#   "logdiff"  – quarter-on-quarter log change    (stationary, lower volatility)
+#
+# NOTE: If you choose "level" or "log", consider differencing downstream
+#       (auto_difference() will handle this if unit-root tests detect I(1)).
+OIL_TRANSFORM <- "yoy"     # change to "logdiff" for lower instability risk
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2.  Data Loading  (Replace This Section With Your Own Data)
@@ -128,7 +159,40 @@ k  <- 2      # domestic variables per country
 selected_countries <- c("DEU", "ESP", 'FRA' ,"ITA")
 var_names     <- c('gdp','inf', 'rate','lt_rate','reer', 'oil')
 
-sim_data <- gvar_data_with_oil[names(gvar_data_with_oil) %in% selected_countries]
+# [NEW] Select oil column based on OIL_TRANSFORM setting
+# Renames the chosen oil variant to "oil" so the rest of the pipeline is unchanged
+oil_col_map <- c(yoy = "oil", level = "oil_level", log = "oil_log", logdiff = "oil_logdiff")
+oil_col     <- oil_col_map[[OIL_TRANSFORM]]
+if (is.null(oil_col))
+  stop("OIL_TRANSFORM must be one of: 'yoy', 'level', 'log', 'logdiff'.")
+
+# Rebuild oil series with the selected transformation, renaming column to "oil"
+if (!is.null(oil_data) && oil_col %in% colnames(oil_data)) {
+  oil_series <- oil_data[, c("date", oil_col)]
+  colnames(oil_series)[2] <- "oil"
+  message(sprintf("[Oil] Using '%s' transformation (column '%s').", OIL_TRANSFORM, oil_col))
+} else {
+  oil_series <- oil_data   # fallback: use whatever is available
+  message("[Oil] Requested transformation column not found; using default.")
+}
+
+# Merge the selected oil series back into fred_final (replace existing "oil" column)
+# Then reconstruct gvar_data_with_oil using the chosen transformation
+if (exists("fred_final") && !is.null(oil_series)) {
+  fred_oil_sel <- fred_final %>%
+    dplyr::select(-dplyr::any_of("oil")) %>%    # drop old oil column
+    dplyr::left_join(oil_series, by = "date")    # join selected oil variant
+
+  gvar_data_with_oil_sel <- to_gvar_list(
+    fred_oil_sel,
+    var_cols = c("gdp", "inf", "rate", "lt_rate", "reer", "oil"),
+    min_obs  = 60
+  )
+} else {
+  gvar_data_with_oil_sel <- gvar_data_with_oil   # fallback
+}
+
+sim_data <- gvar_data_with_oil_sel[names(gvar_data_with_oil_sel) %in% selected_countries]
 sim_data <- align_to_common_dates(sim_data)
 
 # NOTE: With global variable support, we no longer need to exclude oil manually.
@@ -139,6 +203,21 @@ exclude_vars <- c('rate')
 sim_data <- lapply(sim_data, function(df) {
   df[, !(colnames(df) %in% exclude_vars), drop = FALSE]
 })
+
+# [NEW] Build COVID dummies aligned to the common date labels
+if (USE_COVID_DUMMIES) {
+  # Use row names of the first unit as the date label reference
+  date_labels    <- rownames(sim_data[[1]])
+  covid_dummies  <- make_covid_dummies(
+    date_labels   = date_labels,
+    pulse_periods = COVID_PULSE_PERIODS,
+    step_periods  = COVID_STEP_PERIODS
+  )
+  message("[COVID] Dummies created and will be included in estimation.")
+} else {
+  covid_dummies <- NULL
+  message("[COVID] Dummies disabled (USE_COVID_DUMMIES = FALSE).")
+}
 
 # Bilateral trade-weight matrix (illustrative)
 W_raw <- matrix(c(
@@ -226,7 +305,8 @@ gvar_data <- prepare_gvar_dataset(
   q_lag         = q_vec,
   freq          = FREQ,
   global_vars   = GLOBAL_VARS,
-  deterministic = DETERMINISTIC
+  deterministic = DETERMINISTIC,
+  covid_dummies = covid_dummies    # [NEW] pass COVID dummies (NULL if disabled)
 )
 
 
