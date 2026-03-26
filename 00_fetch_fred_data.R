@@ -41,115 +41,136 @@ end_date   <- "2025-12-31"
 
 fred_series <- list(
 
-  EA  = list(gdp="CLVMNACSCAB1GQEA19", cpi="CP0000EZ19M086NEST",
-             rate="IR3TIB01EZQ156N", lt_rate="IRLTLT01EZQ156N",
+  # ── All OECD countries use NAEXKP01*Q657S: GDP volume index, SA, 2015=100 ──
+  # This is the same series type used for CHN and ensures all GDP levels are
+  # directly comparable (all ≈ 100 in 2015) regardless of currency or unit.
+
+  EA  = list(gdp="NAEXKP01EZQ657S",   cpi="CP0000EZ19M086NEST",
+             rate="IR3TIB01EZQ156N",  lt_rate="IRLTLT01EZQ156N",
              reer="CCRETT01EZQ661N",  eq="SPASTT01EZQ661N"),
 
-  USA = list(gdp="GDPC1",             cpi="CPIAUCSL",
+  USA = list(gdp="NAEXKP01USQ657S",   cpi="CPIAUCSL",
              rate="TB3MS",            lt_rate="GS10",
              reer="CCRETT01USQ661N",  eq="SPASTT01USQ661N"),
 
-  GBR = list(gdp="CLVMNACSCAB1GQUK",  cpi="GBRCPIALLMINMEI",
+  GBR = list(gdp="NAEXKP01GBQ657S",   cpi="GBRCPIALLMINMEI",
              rate="IR3TIB01GBQ156N",  lt_rate="IRLTLT01GBQ156N",
              reer="CCRETT01GBQ661N",  eq="SPASTT01GBQ661N"),
 
-  DEU = list(gdp="CLVMNACSCAB1GQDE",  cpi="DEUCPIALLMINMEI",
+  DEU = list(gdp="NAEXKP01DEQ657S",   cpi="DEUCPIALLMINMEI",
              rate="IR3TIB01DEQ156N",  lt_rate="IRLTLT01DEQ156N",
              reer="CCRETT01DEQ661N",  eq="SPASTT01DEQ661N"),
 
-  FRA = list(gdp="CLVMNACSCAB1GQFR",  cpi="FRACPIALLMINMEI",
+  FRA = list(gdp="NAEXKP01FRQ657S",   cpi="FRACPIALLMINMEI",
              rate="IR3TIB01FRQ156N",  lt_rate="IRLTLT01FRQ156N",
              reer="CCRETT01FRQ661N",  eq="SPASTT01FRQ661N"),
 
-  ITA = list(gdp="CLVMNACSCAB1GQIT",  cpi="ITACPIALLMINMEI",
+  ITA = list(gdp="NAEXKP01ITQ657S",   cpi="ITACPIALLMINMEI",
              rate="IR3TIB01ITQ156N",  lt_rate="IRLTLT01ITQ156N",
              reer="CCRETT01ITQ661N",  eq="SPASTT01ITQ661N"),
 
-  JPN = list(gdp="JPNRGDPEXP",        cpi="JPNCPIALLMINMEI",
+  JPN = list(gdp="NAEXKP01JPQ657S",   cpi="JPNCPIALLMINMEI",
              rate="IR3TIB01JPQ156N",  lt_rate="IRLTLT01JPQ156N",
              reer="CCRETT01JPQ661N",  eq="SPASTT01JPQ661N"),
 
-  CAN = list(gdp="NGDPRSAXDCCAQ",     cpi="CANCPIALLMINMEI",
+  CAN = list(gdp="NAEXKP01CAQ657S",   cpi="CANCPIALLMINMEI",
              rate="IR3TIB01CAQ156N",  lt_rate="IRLTLT01CAQ156N",
              reer="CCRETT01CAQ661N",  eq="SPASTT01CAQ661N"),
 
-  AUS = list(gdp="CLVMNACSCAB1GQAU",  cpi="AUSCPIALLMINMEI",
+  AUS = list(gdp="NAEXKP01AUQ657S",   cpi="AUSCPIALLMINMEI",
              rate="IR3TIB01AUQ156N",  lt_rate="IRLTLT01AUQ156N",
              reer="CCRETT01AUQ661N",  eq="SPASTT01AUQ661N"),
 
-  CHE = list(gdp="CLVMNACSCAB1GQCH",  cpi="CHECPIALLMINMEI",
+  CHE = list(gdp="NAEXKP01CHQ657S",   cpi="CHECPIALLMINMEI",
              rate="IR3TIB01CHQ156N",  lt_rate="IRLTLT01CHQ156N",
              reer="CCRETT01CHQ661N",  eq="SPASTT01CHQ661N"),
 
-  SWE = list(gdp="CLVMNACSCAB1GQSE",  cpi="SWECPIALLMINMEI",
+  SWE = list(gdp="NAEXKP01SEQ657S",   cpi="SWECPIALLMINMEI",
              rate="IR3TIB01SEQ156N",  lt_rate="IRLTLT01SEQ156N",
              reer="CCRETT01SEQ661N",  eq="SPASTT01SEQ661N"),
 
-  NOR = list(gdp="CLVMNACSCAB1GQNO",  cpi="NORCPIALLMINMEI",
+  NOR = list(gdp="NAEXKP01NOQ657S",   cpi="NORCPIALLMINMEI",
              rate="IR3TIB01NOQ156N",  lt_rate="IRLTLT01NOQ156N",
              reer="CCRETT01NOQ661N",  eq="SPASTT01NOQ661N"),
 
-  KOR = list(gdp="CLVMNACSCAB1GQKR",  cpi="KORCPIALLMINMEI",
+  KOR = list(gdp="NAEXKP01KRQ657S",   cpi="KORCPIALLMINMEI",
              rate="IR3TIB01KRQ156N",  lt_rate="IRLTLT01KRQ156N",
              reer="CCRETT01KRQ661N",  eq="SPASTT01KRQ661N"),
 
-  DNK = list(gdp="CLVMNACSCAB1GQDK",  cpi="DNKCPIALLMINMEI",
+  DNK = list(gdp="NAEXKP01DKQ657S",   cpi="DNKCPIALLMINMEI",
              rate="IR3TIB01DKQ156N",  lt_rate="IRLTLT01DKQ156N",
              reer="CCRETT01DKQ661N",  eq="SPASTT01DKQ661N"),
 
-  NLD = list(gdp="CLVMNACSCAB1GQNL",  cpi="NLDCPIALLMINMEI",
+  NLD = list(gdp="NAEXKP01NLQ657S",   cpi="NLDCPIALLMINMEI",
              rate="IR3TIB01NLQ156N",  lt_rate="IRLTLT01NLQ156N",
              reer="CCRETT01NLQ661N",  eq="SPASTT01NLQ661N"),
 
-  BEL = list(gdp="CLVMNACSCAB1GQBE",  cpi="BELCPIALLMINMEI",
+  BEL = list(gdp="NAEXKP01BEQ657S",   cpi="BELCPIALLMINMEI",
              rate="IR3TIB01BEQ156N",  lt_rate="IRLTLT01BEQ156N",
              reer="CCRETT01BEQ661N",  eq="SPASTT01BEQ661N"),
 
-  AUT = list(gdp="CLVMNACSCAB1GQAT",  cpi="AUTCPIALLMINMEI",
+  AUT = list(gdp="NAEXKP01ATQ657S",   cpi="AUTCPIALLMINMEI",
              rate="IR3TIB01ATQ156N",  lt_rate="IRLTLT01ATQ156N",
              reer="CCRETT01ATQ661N",  eq="SPASTT01ATQ661N"),
 
-  ESP = list(gdp="CLVMNACSCAB1GQES",  cpi="ESPCPIALLMINMEI",
+  ESP = list(gdp="NAEXKP01ESQ657S",   cpi="ESPCPIALLMINMEI",
              rate="IR3TIB01ESQ156N",  lt_rate="IRLTLT01ESQ156N",
              reer="CCRETT01ESQ661N",  eq="SPASTT01ESQ661N"),
 
-  PRT = list(gdp="CLVMNACSCAB1GQPT",  cpi="PRTCPIALLMINMEI",
+  PRT = list(gdp="NAEXKP01PTQ657S",   cpi="PRTCPIALLMINMEI",
              rate="IR3TIB01PTQ156N",  lt_rate="IRLTLT01PTQ156N",
              reer="CCRETT01PTQ661N",  eq="SPASTT01PTQ661N"),
 
-  GRC = list(gdp="CLVMNACSCAB1GQGR",  cpi="GRCCPIALLMINMEI",
+  GRC = list(gdp="NAEXKP01GRQ657S",   cpi="GRCCPIALLMINMEI",
              rate="IR3TIB01GRQ156N",  lt_rate="IRLTLT01GRQ156N",
              reer="CCRETT01GRQ661N",  eq="SPASTT01GRQ661N"),
 
-  IRL = list(gdp="CLVMNACSCAB1GQIE",  cpi="IRLCPIALLMINMEI",
+  IRL = list(gdp="NAEXKP01IEQ657S",   cpi="IRLCPIALLMINMEI",
              rate="IR3TIB01IEQ156N",  lt_rate="IRLTLT01IEQ156N",
              reer="CCRETT01IEQ661N",  eq="SPASTT01IEQ661N"),
 
-  FIN = list(gdp="CLVMNACSCAB1GQFI",  cpi="FINCPIALLMINMEI",
+  FIN = list(gdp="NAEXKP01FIQ657S",   cpi="FINCPIALLMINMEI",
              rate="IR3TIB01FIQ156N",  lt_rate="IRLTLT01FIQ156N",
              reer="CCRETT01FIQ661N",  eq="SPASTT01FIQ661N"),
 
-  POL = list(gdp="CLVMNACSCAB1GQPL",  cpi="POLCPIALLMINMEI",
+  POL = list(gdp="NAEXKP01PLQ657S",   cpi="POLCPIALLMINMEI",
              rate="IR3TIB01PLQ156N",  lt_rate="IRLTLT01PLQ156N",
              reer="CCRETT01PLQ661N",  eq="SPASTT01PLQ661N"),
 
-  CZE = list(gdp="CLVMNACSCAB1GQCZ",  cpi="CZECPIALLMINMEI",
+  CZE = list(gdp="NAEXKP01CZQ657S",   cpi="CZECPIALLMINMEI",
              rate="IR3TIB01CZQ156N",  lt_rate="IRLTLT01CZQ156N",
              reer="CCRETT01CZQ661N",  eq="SPASTT01CZQ661N"),
 
-  HUN = list(gdp="CLVMNACSCAB1GQHU",  cpi="HUNCPIALLMINMEI",
+  HUN = list(gdp="NAEXKP01HUQ657S",   cpi="HUNCPIALLMINMEI",
              rate="IR3TIB01HUQ156N",  lt_rate="IRLTLT01HUQ156N",
              reer="CCRETT01HUQ661N",  eq="SPASTT01HUQ661N"),
 
-  # CEE countries without OECD MEI equity series
-  SVK = list(gdp="CLVMNACSCAB1GQSK",  cpi="SVKCPIALLMINMEI",
+  SVK = list(gdp="NAEXKP01SKQ657S",   cpi="SVKCPIALLMINMEI",
              rate="IR3TIB01SKQ156N",  lt_rate="IRLTLT01SKQ156N",
              reer="CCRETT01SKQ661N"),
 
-  SVN = list(gdp="CLVMNACSCAB1GQSI",  cpi="SVNCPIALLMINMEI",
+  SVN = list(gdp="NAEXKP01SIQ657S",   cpi="SVNCPIALLMINMEI",
              rate="IR3TIB01SIQ156N",  lt_rate="IRLTLT01SIQ156N",
              reer="CCRETT01SIQ661N"),
 
+  MEX = list(gdp="NAEXKP01MXQ657S",   cpi="MEXCPIALLMINMEI",
+             rate="IR3TIB01MXQ156N",  lt_rate="IRLTLT01MXQ156N",
+             reer="CCRETT01MXQ661N",  eq="SPASTT01MXQ661N"),
+
+  TUR = list(gdp="NAEXKP01TRQ657S",   cpi="TURCPIALLMINMEI",
+             rate="IR3TIB01TRQ156N",  lt_rate="IRLTLT01TRQ156N",
+             reer="CCRETT01TRQ661N",  eq="SPASTT01TRQ661N"),
+
+  IND = list(gdp="NAEXKP01INQ657S",   cpi="INDCPIALLMINMEI",
+             rate="IR3TIB01INQ156N",  lt_rate="IRLTLT01INQ156N",
+             reer="CCRETT01INQ661N",  eq="SPASTT01INQ661N"),
+
+  CHN = list(gdp="NAEXKP01CNQ657S",   cpi="CHNCPIALLMINMEI",
+             rate="IR3TIB01CNQ156N",  lt_rate="IRLTLT01CNQ156N",
+             reer="CCRETT01CNQ661N"),
+
+  # ── Non-OECD / NAEXKP01 not on FRED: keep national-accounts volumes ─────────
+  # Note: gdp levels for these will differ in scale from the OECD index countries.
   ROU = list(gdp="CLVMNACSCAB1GQRO",  cpi="ROUCPIALLMINMEI",
              rate="IR3TIB01ROQ156N",  lt_rate="IRLTLT01ROQ156N",
              reer="CCRETT01ROQ661N"),
@@ -162,10 +183,6 @@ fred_series <- list(
              rate="IR3TIB01HRQ156N",  lt_rate="IRLTLT01HRQ156N",
              reer="CCRETT01HRQ661N"),
 
-  MEX = list(gdp="CLVMNACSCAB1GQMX",  cpi="MEXCPIALLMINMEI",
-             rate="IR3TIB01MXQ156N",  lt_rate="IRLTLT01MXQ156N",
-             reer="CCRETT01MXQ661N",  eq="SPASTT01MXQ661N"),
-
   BRA = list(gdp="CLVMNACSCAB1GQBR",  cpi="BRACPIALLMINMEI",
              rate="IR3TIB01BRQ156N",  lt_rate="IRLTLT01BRQ156N",
              reer="CCRETT01BRQ661N",  eq="SPASTT01BRQ661N"),
@@ -174,22 +191,9 @@ fred_series <- list(
              rate="IR3TIB01ZAQ156N",  lt_rate="IRLTLT01ZAQ156N",
              reer="CCRETT01ZAQ661N",  eq="SPASTT01ZAQ661N"),
 
-  TUR = list(gdp="CLVMNACSCAB1GQTR",  cpi="TURCPIALLMINMEI",
-             rate="IR3TIB01TRQ156N",  lt_rate="IRLTLT01TRQ156N",
-             reer="CCRETT01TRQ661N",  eq="SPASTT01TRQ661N"),
-
-  # Emerging markets without OECD MEI equity series
   RUS = list(gdp="CLVMNACSCAB1GQRU",  cpi="RUSCPIALLMINMEI",
              rate="IR3TIB01RUQ156N",  lt_rate="IRLTLT01RUQ156N",
              reer="CCRETT01RUQ661N"),
-
-  IND = list(gdp="CLVMNACSCAB1GQIN",  cpi="INDCPIALLMINMEI",
-             rate="IR3TIB01INQ156N",  lt_rate="IRLTLT01INQ156N",
-             reer="CCRETT01INQ661N",  eq="SPASTT01INQ661N"),
-
-  CHN = list(gdp="NAEXKP01CNQ657S",   cpi="CHNCPIALLMINMEI",
-             rate="IR3TIB01CNQ156N",  lt_rate="IRLTLT01CNQ156N",
-             reer="CCRETT01CNQ661N"),
 
   IDN = list(gdp="CLVMNACSCAB1GQID",  cpi="IDNCPIALLMINMEI",
              rate="IR3TIB01IDQ156N",  lt_rate="IRLTLT01IDQ156N",
@@ -281,16 +285,10 @@ fred_data <- raw %>%
   dplyr::group_by(country) %>%
   dplyr::arrange(date) %>%
   dplyr::mutate(
-    # GDP: normalize to a volume index (2015 mean = 100) for cross-country
-    # comparability, regardless of original currency / units.
-    # Growth rates (gdp_logdiff) are identical to ld(raw gdp).
-    gdp_base    = {
-      b <- mean(gdp[as.integer(format(date, "%Y")) == 2015L], na.rm = TRUE)
-      if (!is.finite(b)) b <- mean(gdp, na.rm = TRUE)
-      b
-    },
-    gdp_level   = gdp / gdp_base * 100,   # index: ≈ 100 in 2015 for every country
-    gdp_log     = log(gdp_level),
+    # GDP: NAEXKP01*Q657S is a dimensionless volume index (2015=100, SA) for all
+    # OECD countries, so gdp_level values are directly comparable across countries.
+    gdp_level   = gdp,
+    gdp_log     = log(gdp),
     gdp_logdiff = ld(gdp),
     cpi_level   = cpi,
     cpi_log     = log(cpi),
