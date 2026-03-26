@@ -493,6 +493,25 @@ draw_niw_posterior <- function(B_n, V_n, S_n, v_n, k_dom) {
 #' @param lambda_4    Star variable tightness (default 0.5)
 #' @param rw_prior    Logical; random-walk prior (default TRUE)
 #' @param seed        Random seed
+#' @param regularise  Logical; if TRUE use rejection sampling to retain only
+#'                    stable draws (max eigenvalue modulus < 1).  The sampler
+#'                    will attempt up to \code{max_attempts} draws to collect
+#'                    \code{n_draws} stable ones.  Unstable draws are discarded.
+#'                    Useful when default lambdas yield too many explosive draws.
+#'                    Default FALSE (backward compatible).
+#' @param max_attempts Maximum total draw attempts when regularise = TRUE.
+#'                    Defaults to 10 * n_draws.  A warning is issued if fewer
+#'                    than n_draws stable draws are obtained within this budget.
+#' @param lambda_5    Sum-of-coefficients (SOC) prior weight (Doan-Litterman-Sims).
+#'                    When > 0, augments each unit's Y/X with k_dom dummy rows that
+#'                    shrink the sum of lag coefficients toward zero, pulling draws
+#'                    away from unit roots and reducing explosiveness.  Larger values
+#'                    = stronger stationarity push (try 0.01–0.1).  Default 0 = off.
+#' @param project_stable Logical; if TRUE, any draw whose companion matrix is
+#'                    explosive is rescaled so its spectral radius equals 0.99
+#'                    (eigenvalue projection).  This guarantees all retained draws
+#'                    are stable without discarding them (unlike regularise).
+#'                    Can be combined with regularise.  Default FALSE.
 #' @return A bayesian_gvar object
 bayesian_estimate_gvar <- function(gvar_data,
                                     n_draws = 1000,
@@ -502,7 +521,11 @@ bayesian_estimate_gvar <- function(gvar_data,
                                     lambda_4 = 0.5,
                                     rw_prior = TRUE,
                                     seed = 42,
-                                    deterministic = "intercept") {
+                                    deterministic = "intercept",
+                                    regularise = FALSE,
+                                    max_attempts = NULL,
+                                    lambda_5 = 0,
+                                    project_stable = FALSE) {
 
   print_banner("Bayesian GVAR Estimation (Minnesota Prior)")
 
@@ -588,6 +611,34 @@ bayesian_estimate_gvar <- function(gvar_data,
       V_0 <- diag(lambda_1^2, m)
       S_0 <- diag(sigma_sq[1:k_dom])
       v_0 <- k_dom + 2
+    }
+
+    # ---- Sum-of-coefficients (SOC) prior augmentation ----
+    # When lambda_5 > 0, add k_dom dummy observations that shrink the sum of
+    # lag coefficients toward zero, penalising near-unit-root behaviour.
+    # The dummy for variable i sets Y_i = y_bar[i]/lambda_5 and places
+    # y_bar[j]/(p_lag*lambda_5) in each of the p_lag * k_dom lagged-domestic
+    # X positions, zeros elsewhere (det, star, global).
+    if (lambda_5 > 0 && cd$p_lag >= 1) {
+      p_lag_soc <- cd$p_lag
+      # Pre-sample mean: use the mean of the first p_lag rows of Y
+      y_bar <- colMeans(Y[seq_len(min(p_lag_soc, nrow(Y))), , drop = FALSE],
+                         na.rm = TRUE)
+      Y_soc <- matrix(0, nrow = k_dom, ncol = k_dom)
+      X_soc <- matrix(0, nrow = k_dom, ncol = m)
+      lag_dom_start <- n_det + k_star + k_global + 1L  # first lagged-domestic row in X
+
+      for (j in seq_len(k_dom)) {
+        Y_soc[j, j] <- y_bar[j] / lambda_5
+        # Place y_bar[j]/(p_lag*lambda_5) in every lag-of-variable-j position
+        for (l in seq_len(p_lag_soc)) {
+          col_idx <- lag_dom_start + (l - 1L) * k_dom + (j - 1L)
+          if (col_idx <= m)
+            X_soc[j, col_idx] <- y_bar[j] / (p_lag_soc * lambda_5)
+        }
+      }
+      Y <- rbind(Y, Y_soc)
+      X <- rbind(X, X_soc)
     }
 
     # Posterior computation — Minnesota prior ensures V_0 is PD, so no fallback needed
@@ -701,36 +752,33 @@ bayesian_estimate_gvar <- function(gvar_data,
   kp       <- k_total * p_global
 
   # ---- Stage 3: Posterior draws ----
-  message(sprintf("\n  Stage 3: Drawing %d posterior samples ...", n_draws))
+  if (regularise) {
+    message(sprintf("\n  Stage 3: Drawing posterior samples (regularised – retaining only stable draws) ..."))
+  } else {
+    message(sprintf("\n  Stage 3: Drawing %d posterior samples ...", n_draws))
+  }
+
+  if (is.null(max_attempts)) max_attempts <- 10L * n_draws
 
   companion_draws <- array(NA, dim = c(kp, kp, n_draws))
   Sigma_draws     <- array(NA, dim = c(k_total, k_total, n_draws))
   F0_draws        <- matrix(NA, nrow = k_total, ncol = n_draws)
   stable_flags    <- logical(n_draws)
 
-  pb_interval <- max(1, floor(n_draws / 10))
-
-  for (s in seq_len(n_draws)) {
-    if (s %% pb_interval == 0) {
-      message(sprintf("    Draw %d / %d ...", s, n_draws))
-    }
-
-    # Draw from each unit's posterior
+  # Helper: draw one GVAR sample from unit posteriors
+  .one_draw <- function() {
     unit_fits_draw <- setNames(vector("list", N), unit_names)
 
     for (u in unit_names) {
-      post <- unit_posteriors[[u]]
-
-      draw <- draw_niw_posterior(post$B_n, post$V_n, post$S_n, post$v_n, post$k_dom)
-
-      # Partition B_draw using helpers
-      B_d <- draw$B_draw
+      post  <- unit_posteriors[[u]]
+      draw  <- draw_niw_posterior(post$B_n, post$V_n, post$S_n, post$v_n, post$k_dom)
+      B_d   <- draw$B_draw
       k_dom <- post$k_dom; k_star <- post$k_star; k_global <- post$k_global
-      p_lag <- post$p_lag; q_lag <- post$q_lag; d_lag_i <- post$d_lag
+      p_lag <- post$p_lag; q_lag  <- post$q_lag;  d_lag_i  <- post$d_lag
 
       det_d <- build_deterministic_columns(1, deterministic)
-      dp_d <- partition_deterministic(B_d, det_d$n_det, det_d$has_intercept,
-                                       det_d$has_trend, k_dom)
+      dp_d  <- partition_deterministic(B_d, det_d$n_det, det_d$has_intercept,
+                                        det_d$has_trend, k_dom)
       intercept_d <- dp_d$intercept
       trend_d     <- dp_d$trend
       idx         <- dp_d$start_idx
@@ -765,25 +813,81 @@ bayesian_estimate_gvar <- function(gvar_data,
         intercept = intercept_d, trend = trend_d,
         A = A_coef_d, B = B_coef_d, D = D_coef_d,
         sigma = draw$Sigma_draw,
-        residuals = unit_fits_mean[[u]]$residuals,  # approximate
+        residuals = unit_fits_mean[[u]]$residuals,
         k_dom = k_dom, k_star = k_star, k_global = k_global,
         p_lag = p_lag, q_lag = q_lag, d_lag = d_lag_i
       )
     }
 
-    # Stack this draw
-    global_draw <- tryCatch(
+    tryCatch(
       stack_to_gvar(unit_fits_draw, data_list_for_stack, gvar_data$W,
                      global_config = gvar_data$global_config),
       error = function(e) NULL
     )
+  }
 
-    if (!is.null(global_draw)) {
-      companion_draws[, , s] <- global_draw$companion
-      Sigma_draws[, , s]     <- global_draw$Sigma
-      F0_draws[, s]          <- global_draw$F0
-      stable_flags[s]        <- global_draw$is_stable
+  pb_interval <- max(1, floor(n_draws / 10))
+
+  if (!regularise) {
+    # Standard loop: collect exactly n_draws (stable or not)
+    for (s in seq_len(n_draws)) {
+      if (s %% pb_interval == 0)
+        message(sprintf("    Draw %d / %d ...", s, n_draws))
+
+      gd <- .one_draw()
+      if (!is.null(gd)) {
+        comp <- gd$companion
+        if (project_stable && !isTRUE(gd$is_stable)) {
+          sr <- max(Mod(eigen(comp, only.values = TRUE)$values))
+          if (is.finite(sr) && sr > 0) comp <- comp * (0.99 / sr)
+          gd$is_stable <- TRUE
+        }
+        companion_draws[, , s] <- comp
+        Sigma_draws[, , s]     <- gd$Sigma
+        F0_draws[, s]          <- gd$F0
+        stable_flags[s]        <- gd$is_stable
+      }
     }
+  } else {
+    # Rejection sampling: only retain stable draws
+    s        <- 0L      # number of retained draws
+    attempts <- 0L
+
+    while (s < n_draws && attempts < max_attempts) {
+      attempts <- attempts + 1L
+      gd <- .one_draw()
+      if (is.null(gd) || !isTRUE(gd$is_stable)) next
+
+      s <- s + 1L
+      companion_draws[, , s] <- gd$companion
+      Sigma_draws[, , s]     <- gd$Sigma
+      F0_draws[, s]          <- gd$F0
+      stable_flags[s]        <- TRUE
+
+      if (s %% pb_interval == 0)
+        message(sprintf("    Stable draw %d / %d (attempts so far: %d) ...",
+                        s, n_draws, attempts))
+    }
+
+    if (s < n_draws) {
+      warning(sprintf(
+        "[Bayesian] regularise=TRUE: only %d / %d stable draws obtained after %d attempts.\n  Consider tightening lambda_1 or increasing max_attempts.",
+        s, n_draws, attempts))
+      # Trim arrays to the draws actually obtained
+      if (s == 0) {
+        companion_draws <- array(NA, dim = c(kp, kp, 0))
+        Sigma_draws     <- array(NA, dim = c(k_total, k_total, 0))
+        F0_draws        <- matrix(NA, nrow = k_total, ncol = 0)
+        stable_flags    <- logical(0)
+      } else {
+        companion_draws <- companion_draws[, , seq_len(s), drop = FALSE]
+        Sigma_draws     <- Sigma_draws[, , seq_len(s), drop = FALSE]
+        F0_draws        <- F0_draws[, seq_len(s), drop = FALSE]
+        stable_flags    <- stable_flags[seq_len(s)]
+      }
+    }
+    message(sprintf("    Rejection sampling: %d stable draws from %d attempts (%.1f%% acceptance).",
+                    s, attempts, 100 * s / max(attempts, 1)))
   }
 
   n_stable <- sum(stable_flags, na.rm = TRUE)

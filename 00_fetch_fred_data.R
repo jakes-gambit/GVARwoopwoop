@@ -270,7 +270,11 @@ oil_q <- oil_raw %>%
   )
 
 # Helper: compute log-diff safely within a vector
-ld <- function(x) c(NA_real_, diff(log(pmax(x, NA_real_))))
+# log(NA) = NA propagates naturally; no pmax needed
+ld <- function(x) c(NA_real_, diff(log(x)))
+
+# Ensure eq column exists for all countries (absent for some)
+if (!"eq" %in% names(raw)) raw$eq <- NA_real_
 
 fred_data <- raw %>%
   dplyr::group_by(country) %>%
@@ -278,21 +282,19 @@ fred_data <- raw %>%
   dplyr::transmute(
     date,
     gdp_level   = gdp,
-    gdp_log     = log(pmax(gdp,  NA_real_)),
+    gdp_log     = log(gdp),
     gdp_logdiff = ld(gdp),
     cpi_level   = cpi,
-    cpi_log     = log(pmax(cpi,  NA_real_)),
+    cpi_log     = log(cpi),
     cpi_logdiff = ld(cpi),
     rate,
     lt_rate,
     reer_level   = reer,
-    reer_log     = log(pmax(reer, NA_real_)),
+    reer_log     = log(reer),
     reer_logdiff = ld(reer),
-    # eq column may be absent for some countries → coalesce to NA
-    eq_level     = dplyr::if_else(rep("eq" %in% names(dplyr::pick(everything())), dplyr::n()),
-                                   get0("eq"), NA_real_),
-    eq_log       = log(pmax(eq_level, NA_real_)),
-    eq_logdiff   = ld(eq_level)
+    eq_level     = eq,
+    eq_log       = log(eq),
+    eq_logdiff   = ld(eq)
   ) %>%
   dplyr::ungroup() %>%
   dplyr::left_join(oil_q, by = "date") %>%   # same oil value for every country
