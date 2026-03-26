@@ -435,12 +435,14 @@ vecm_to_levels_var <- function(alpha, beta, Gamma_dom, Gamma_star,
       A[[p_lag]] <- matrix(0, k_dom, k_dom)
     }
     
-    # A_l = Gamma^x_{l-1} - Gamma^x_l  for l = p, p-1, ..., 2
+    # A_l = Gamma^x_l - Gamma^x_{l-1}  for l = 2, ..., p-1
+    # Derivation: Gamma_l = -(A_{l+1}+...+A_p), so Gamma_{l-1} - Gamma_l = -A_l,
+    # hence A_l = Gamma_l - Gamma_{l-1}.
     if (p_lag >= 3) {
       for (l in (p_lag - 1):2) {
         Gamma_l   <- if (l <= length(Gamma_dom)) Gamma_dom[[l]] else matrix(0, k_dom, k_dom)
         Gamma_lm1 <- if ((l - 1) <= length(Gamma_dom)) Gamma_dom[[l - 1]] else matrix(0, k_dom, k_dom)
-        A[[l]] <- Gamma_lm1 - Gamma_l
+        A[[l]] <- Gamma_l - Gamma_lm1
       }
     }
     
