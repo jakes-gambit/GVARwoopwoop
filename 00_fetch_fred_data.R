@@ -4,15 +4,22 @@
 #  Output:  fred_data  (one data frame, saved to gvar_fred_data.RData)
 #
 #  Columns per country × date:
-#    gdp_level,  gdp_log,  gdp_logdiff     – Real GDP
-#    cpi_level,  cpi_log,  cpi_logdiff     – Consumer price index
-#    rate                                  – 3-month interbank rate (level)
-#    lt_rate                               – 10-year bond yield (level)
-#    reer_level, reer_log, reer_logdiff    – Real effective exchange rate
-#    eq_level,   eq_log,   eq_logdiff      – Equity price index
-#    oil_level,  oil_log,  oil_logdiff     – Brent crude (same for all ctries)
 #
-#  logdiff = log(x_t) − log(x_{t−1})  (quarterly log-change)
+#  Primary economic variables (use these in DOMESTIC_VARS):
+#    gdp_growth   – real GDP growth        log(GDP_t) − log(GDP_{t-1}), quarterly
+#    inflation    – CPI inflation           log(CPI_t) − log(CPI_{t-1}), quarterly
+#    rate         – 3-month interbank rate  level (already ~stationary, in %)
+#    lt_rate      – 10-year bond yield      level (in %)
+#    reer_logdiff – REER log-change         log(REER_t) − log(REER_{t-1})
+#    eq_logdiff   – equity log-change       log(EQ_t)   − log(EQ_{t-1})
+#    oil_logdiff  – oil log-change          log(OIL_t)  − log(OIL_{t-1})
+#
+#  Research / diagnostic columns (level & log forms, I(1)):
+#    gdp_level,  gdp_log
+#    cpi_level,  cpi_log
+#    reer_level, reer_log
+#    eq_level,   eq_log
+#    oil_level,  oil_log
 #
 #  PREREQUISITES:
 #    fredr, dplyr  – install.packages(c("fredr","dplyr"))
@@ -249,13 +256,14 @@ cat(sprintf("OK (%d rows)\n", nrow(oil_raw)))
 # ─────────────────────────────────────────────────────────────────────────────
 # 4.  Transform
 #
-#     For GDP, CPI, REER, EQ : level / log / quarterly log-change (logdiff)
-#     For rates               : level only (already in %)
-#     For oil                 : aggregate daily to quarterly average first,
-#                               then level / log / logdiff
+#  Primary stationary series (use in VARX*):
+#    gdp_growth  = log(GDP_t)  − log(GDP_{t-1})   ← real GDP growth
+#    inflation   = log(CPI_t)  − log(CPI_{t-1})   ← CPI inflation
+#    rate / lt_rate                                ← already ~stationary in %
+#    reer_logdiff / eq_logdiff / oil_logdiff       ← log-changes
 #
-#     logdiff = log(x_t) − log(x_{t-1}) ≈ quarter-on-quarter change
-#     log(0) / log(negative) → NA (not treated as error)
+#  Retained level/log columns are for research and diagnostics only.
+#  log(0) or log(NA) → NA, not treated as an error.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Quarter-average the daily oil price
@@ -281,12 +289,12 @@ fred_data <- raw %>%
   dplyr::arrange(date) %>%
   dplyr::transmute(
     date,
-    gdp_level   = gdp,
-    gdp_log     = log(gdp),
-    gdp_logdiff = ld(gdp),
-    cpi_level   = cpi,
-    cpi_log     = log(cpi),
-    cpi_logdiff = ld(cpi),
+    gdp_level  = gdp,
+    gdp_log    = log(gdp),
+    gdp_growth = ld(gdp),        # real GDP growth  (quarterly log-change)
+    cpi_level  = cpi,
+    cpi_log    = log(cpi),
+    inflation  = ld(cpi),        # CPI inflation    (quarterly log-change)
     rate,
     lt_rate,
     reer_level   = reer,
