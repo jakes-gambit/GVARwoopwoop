@@ -280,8 +280,17 @@ fred_data <- raw %>%
   dplyr::group_by(country) %>%
   dplyr::arrange(date) %>%
   dplyr::mutate(
-    gdp_level   = gdp,
-    gdp_log     = log(gdp),
+    # GDP: normalize to a volume index (2015 mean = 100) so that levels are
+    # comparable across countries regardless of original currency / units.
+    # Growth rates (gdp_logdiff) are identical to ld(raw gdp) since the
+    # normalisation constant cancels in the difference.
+    gdp_base    = {
+      b <- mean(gdp[as.integer(format(date, "%Y")) == 2015L], na.rm = TRUE)
+      if (!is.finite(b)) b <- mean(gdp, na.rm = TRUE)
+      b
+    },
+    gdp_level   = gdp / gdp_base * 100,   # index: ≈ 100 in 2015 for every country
+    gdp_log     = log(gdp_level),
     gdp_logdiff = ld(gdp),
     cpi_level   = cpi,
     cpi_log     = log(cpi),

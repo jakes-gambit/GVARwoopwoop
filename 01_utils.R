@@ -307,21 +307,43 @@ partition_deterministic <- function(beta, n_det, has_intercept, has_trend,
 #'                  Pass NULL to skip level recovery for log variables.
 #' @return  A data frame with the same row structure as mat and columns:
 #'   variable, period (1…T), model_value, econ_value, econ_unit
+#' Recover interpretable economic variables from model-space outputs.
+#'
+#' Handles the variable conventions used throughout this GVAR toolkit:
+#'   *_logdiff  → annualised % growth (× 400 quarterly, × 100 annual)
+#'               For IRF context: quarterly % change (× 100)
+#'   rho_s / rho_l (quarterly log rates, ρ = 0.25·ln(1+R/100)):
+#'               forecast context → back-transform to % p.a.: (exp(4ρ)−1)·100
+#'               IRF context     → linearised Δ% p.a.: ρ × 400
+#'   *_log      → level recovery: exp(value) × base_level  (forecast)
+#'               IRF context: approximate % change: value × 100
+#'   all other  → pass-through
+#'
+#' @param mat           Matrix with named columns in "UNIT.varname" format.
+#'                      Rows = time periods (forecasts) or horizons (IRFs).
+#' @param freq          "quarterly" or "annual"
+#' @param log_base_list Named list: "UNIT.varname" → last observed level.
+#'                      Used only in forecast context to recover absolute levels.
+#' @param context       "forecast" (default) or "irf".  Controls how logdiffs
+#'                      and log-levels are converted.
+#' @return  data.frame with columns: variable, period, model_value,
+#'          econ_value, econ_unit
 recover_economic_variables <- function(mat, freq = "quarterly",
-                                       log_base_list = NULL) {
+                                       log_base_list = NULL,
+                                       context = c("forecast", "irf")) {
 
-  mat   <- as.matrix(mat)
-  vnames <- colnames(mat)
+  context <- match.arg(context)
+  mat     <- as.matrix(mat)
+  vnames  <- colnames(mat)
   if (is.null(vnames)) stop("mat must have named columns (UNIT.varname).")
 
   annualise <- if (freq == "quarterly") 400 else 100
 
   rows <- list()
   for (j in seq_along(vnames)) {
-    vfull <- vnames[j]
-    # Strip the "UNIT." prefix to get the raw variable name
+    vfull  <- vnames[j]
     dot    <- regexpr("\\.", vfull)[1]
-    varstr <- substr(vfull, dot + 1, nchar(vfull))
+    varstr <- if (dot > 0) substr(vfull, dot + 1, nchar(vfull)) else vfull
 
     for (t in seq_len(nrow(mat))) {
       mv <- mat[t, j]
@@ -329,23 +351,45 @@ recover_economic_variables <- function(mat, freq = "quarterly",
       eu <- "raw"
 
       if (grepl("_logdiff$", varstr)) {
-        # Annualised percentage growth rate
-        ev <- mv * annualise
-        eu <- "% growth (ann.)"
+        # Quarterly log-change → annualised % growth (forecast) or
+        # quarterly % change (IRF, horizon-by-horizon)
+        if (context == "forecast") {
+          ev <- mv * annualise
+          eu <- "% p.a. growth"
+        } else {
+          ev <- mv * 100
+          eu <- "% chg (quarterly)"
+        }
+
+      } else if (varstr %in% c("rho_s", "rho_l")) {
+        # Quarterly log rate: ρ = 0.25·ln(1 + R/100)
+        if (context == "forecast") {
+          ev <- (exp(4 * mv) - 1) * 100   # exact inverse → % p.a.
+          eu <- "% p.a."
+        } else {
+          ev <- mv * 400                   # linearised Δ% p.a.
+          eu <- "Δ% p.a."
+        }
 
       } else if (grepl("_log$", varstr)) {
-        # Log level: convert to index level if base supplied
-        if (!is.null(log_base_list) && vfull %in% names(log_base_list)) {
-          ev <- exp(mv) * log_base_list[[vfull]]
+        if (context == "forecast") {
+          # Recover absolute level: exp(log) × last-observed level
+          if (!is.null(log_base_list) && vfull %in% names(log_base_list)) {
+            ev <- exp(mv) * log_base_list[[vfull]]
+          } else {
+            ev <- exp(mv)
+          }
+          eu <- "index level"
         } else {
-          ev <- exp(mv)
+          # IRF: log-level response ≈ % change
+          ev <- mv * 100
+          eu <- "% chg"
         }
-        eu <- "index level"
 
       } else {
-        # Rates, levels, oil — pass through unchanged
+        # Pass-through: raw rates (lt_rate, rate), oil level, etc.
         ev <- mv
-        eu <- if (grepl("rate|lt_rate", varstr)) "% p.a." else "level"
+        eu <- if (grepl("rate", varstr)) "% p.a." else "level"
       }
 
       rows[[length(rows) + 1]] <- data.frame(
@@ -378,6 +422,43 @@ last_observed_levels <- function(sim_data) {
     }
   }
   out
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 11. print_eigenvalues()
+#     Print sorted eigenvalues (by modulus) of a companion matrix.
+#     Used for both individual-unit and global model diagnostics.
+#
+#  @param companion  Square numeric matrix (companion-form VAR)
+#  @param label      Label printed in the header
+#  @param top_n      How many eigenvalues to show (sorted by modulus desc)
+#  @return           Invisible list(eigenvalues, moduli) for programmatic use
+# ───────────────────────────────────────────────────────────────────────────────
+
+print_eigenvalues <- function(companion, label = "Model", top_n = 20) {
+  eig     <- eigen(companion, only.values = TRUE)$values
+  eig_mod <- Mod(eig)
+  ord     <- order(eig_mod, decreasing = TRUE)
+  eig     <- eig[ord]
+  eig_mod <- eig_mod[ord]
+
+  n_show  <- min(top_n, length(eig))
+  stable  <- max(eig_mod) < 1
+
+  cat(sprintf("\n── Eigenvalues: %-30s  (top %d of %d by modulus) ──\n",
+              label, n_show, length(eig)))
+  cat(sprintf("  %4s  %10s  %10s  %10s\n", "Rank", "|λ|", "Re(λ)", "Im(λ)"))
+  cat("  ", strrep("-", 44), "\n", sep = "")
+  for (i in seq_len(n_show)) {
+    cat(sprintf("  %4d  %10.5f  %10.5f  %10.5f\n",
+                i, eig_mod[i], Re(eig[i]), Im(eig[i])))
+  }
+  cat("  ", strrep("-", 44), "\n", sep = "")
+  cat(sprintf("  Max |λ| = %.6f   Stable: %s\n",
+              max(eig_mod), if (stable) "YES" else "*** NO – UNSTABLE ***"))
+
+  invisible(list(eigenvalues = eig, moduli = eig_mod, stable = stable))
 }
 
 
