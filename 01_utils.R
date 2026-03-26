@@ -379,3 +379,69 @@ last_observed_levels <- function(sim_data) {
   }
   out
 }
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 12. plot_gvar_series()
+#     Generate one ggplot panel per variable in var_list.
+#     All countries in sim_data are overlaid as coloured lines.
+#     Output is saved as a multi-page PDF.
+#
+#  @param sim_data  Named list of T × k matrices (GVAR format, "YYYY-QN" rownames)
+#  @param var_list  Character vector of variable names to plot
+#  @param file_out  Path for the output PDF  (default "gvar_variable_plots.pdf")
+# ───────────────────────────────────────────────────────────────────────────────
+
+plot_gvar_series <- function(sim_data, var_list, file_out = "gvar_variable_plots.pdf") {
+
+  if (!requireNamespace("ggplot2", quietly = TRUE))
+    stop("ggplot2 is required for plot_gvar_series()")
+
+  # Build a long data frame across all countries and variables
+  dfs <- list()
+  for (u in names(sim_data)) {
+    mat <- sim_data[[u]]
+    for (v in var_list) {
+      if (!v %in% colnames(mat)) next
+      dfs[[paste0(u, ".", v)]] <- data.frame(
+        period  = rownames(mat),
+        country = u,
+        var     = v,
+        value   = as.numeric(mat[, v]),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  if (length(dfs) == 0) {
+    message("[plot_gvar_series] No matching variables found in sim_data.")
+    return(invisible(NULL))
+  }
+  df_long <- do.call(rbind, dfs)
+
+  # Convert "YYYY-QN" period labels to a numeric x-axis (year + quarter fraction)
+  qtr_to_num <- function(lbl) {
+    yr <- as.integer(sub("-Q.*", "", lbl))
+    q  <- as.integer(sub(".*-Q", "", lbl))
+    yr + (q - 1) / 4
+  }
+  df_long$time <- qtr_to_num(df_long$period)
+
+  vars_present <- intersect(var_list, unique(df_long$var))
+
+  pdf(file_out, width = 10, height = 5)
+  for (v in vars_present) {
+    sub <- df_long[df_long$var == v, ]
+    sub <- sub[!is.na(sub$value), ]
+    p <- ggplot2::ggplot(sub, ggplot2::aes(x = time, y = value,
+                                           colour = country, group = country)) +
+      ggplot2::geom_line(linewidth = 0.7) +
+      ggplot2::labs(title = v, x = NULL, y = v, colour = "Country") +
+      ggplot2::theme_bw(base_size = 11) +
+      ggplot2::theme(legend.position = "right")
+    print(p)
+  }
+  dev.off()
+  message(sprintf("[plot_gvar_series] %d variable panels saved to %s",
+                  length(vars_present), file_out))
+  invisible(file_out)
+}

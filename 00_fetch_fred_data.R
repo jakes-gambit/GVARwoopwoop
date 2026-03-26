@@ -289,12 +289,15 @@ fred_data <- raw %>%
     reer_level   = reer,
     reer_log     = log(reer),
     reer_logdiff = ld(reer),
-    # lt_level     = lt_rate,
-    # lt_log       = log(lt_rate),
-    # lt_logdiff   = ld(lt_rate),
-    eq_level     = eq,
-    eq_log       = log(eq),
-    eq_logdiff   = ld(eq)
+    eq_level         = eq,
+    eq_log           = log(eq),
+    eq_logdiff       = ld(eq),
+    # Real equity price: q_it = ln(EQ_it / CPI_it)  (Dees et al. 2007)
+    eq_real_log      = log(eq / cpi),
+    eq_real_logdiff  = ld(eq / cpi),
+    # Quarterly log interest rates: ρ = 0.25 · ln(1 + R/100)  (Dees et al. 2007)
+    rho_s            = 0.25 * log(1 + rate    / 100),
+    rho_l            = 0.25 * log(1 + lt_rate / 100)
   ) %>%
   dplyr::ungroup() %>%
   dplyr::left_join(oil_q, by = "date") %>%   # same oil value for every country
@@ -386,11 +389,19 @@ cat("Note: Content generated using AI – expert verification recommended.\n")
 
 source("08_kalman_filter.R")   # for kalman_temporal_disaggregate()
 
+
+# Use the validated quarterly series IDs with frequency="a" so FRED aggregates
+# them to annual automatically.  The quarterly IDs below are confirmed to exist.
+#   GDP  : NAEXKP01CNQ657S  (real GDP index, SA, quarterly)
+#   CPI  : CHNCPIALLMINMEI  (CPI all items, monthly – FRED averages to annual)
+#   Short: IR3TIB01CNQ156N  (3-month money market rate, quarterly)
+#   Long : IRLTLT01CNQ156N  (10-yr bond yield, quarterly)
+#   REER : CCRETT01CNQ661N  (REER, quarterly)
 chn_annual_series <- list(
-  gdp     = "NAEXKP01CNA189S",   # real GDP index, 2015=100, annual (OECD)
-  cpi     = "CPALTT01CNA661S",   # CPI all items, annual average (OECD MEI)
-  lt_rate = "IRLTLT01CNA156N",   # 10-yr bond yield, annual (OECD MEI)
-  reer    = "CCRETT01CNA661N"    # REER, annual average (OECD MEI)
+  gdp     = "NAEXKP01CNQ657S",   # quarterly → annual avg via frequency="a"
+  cpi     = "CHNCPIALLMINMEI",   # monthly  → annual avg via frequency="a"
+  lt_rate = "IRLTLT01CNQ156N",   # quarterly → annual avg via frequency="a"
+  reer    = "CCRETT01CNQ661N"    # quarterly → annual avg via frequency="a"
 )
 
 cat("\nFetching annual China (CHN) series from FRED...\n")
@@ -477,7 +488,7 @@ if (length(chn_quarterly_disagg) > 0) {
     col_map <- list(
       gdp     = c("gdp", "gdp_level", "gdp_log", "gdp_logdiff"),
       cpi     = c("cpi", "cpi_level", "cpi_log", "cpi_logdiff"),
-      lt_rate = "lt_rate",
+      lt_rate = c("lt_rate", "rho_l"),
       reer    = c("reer", "reer_level", "reer_log", "reer_logdiff")
     )
 
@@ -508,6 +519,15 @@ if (length(chn_quarterly_disagg) > 0) {
       if (paste0(v, "_logdiff") %in% colnames(fred_data)) {
         ld_vals <- c(NA_real_, diff(log(lvl)))
         fred_data[chn_idx, paste0(v, "_logdiff")] <- ld_vals
+      }
+      # Recompute derived columns that depend on this level
+      if (v == "cpi" && "eq_real_log" %in% colnames(fred_data)) {
+        eq_lvl <- fred_data[chn_idx, "eq"]
+        fred_data[chn_idx, "eq_real_log"]     <- log(eq_lvl / lvl)
+        fred_data[chn_idx, "eq_real_logdiff"] <- c(NA_real_, diff(log(eq_lvl / lvl)))
+      }
+      if (v == "lt_rate" && "rho_l" %in% colnames(fred_data)) {
+        fred_data[chn_idx, "rho_l"] <- 0.25 * log(1 + lvl / 100)
       }
     }
     cat(sprintf("  [CHN patch] %s patched in fred_data.\n", v))

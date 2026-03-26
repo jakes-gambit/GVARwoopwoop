@@ -46,7 +46,7 @@ COUNTRIES <- c("USA", "DEU", "FRA")
 # Domestic variables to use in each country's VARX*.
 # Pick column names from fred_data (level / log / logdiff transformations).
 # Stationary variables preferred: logdiff for GDP/CPI/REER/EQ, levels for rates.
-DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "lt_rate", "reer_log",'eq_log')
+DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "rho_l", "reer_log", "eq_real_log")
 
 # Global variable: one oil transformation enters via the dominant-unit approach.
 # Options: "oil_level"  – price in $/barrel (I(1), use with unit-root caution)
@@ -112,6 +112,18 @@ sim_data <- lapply(sim_data, function(m) {
 })
 
 sim_data <- align_to_common_dates(sim_data)
+
+
+###############################################################################
+#  2b.  VARIABLE PLOTS
+#        One panel per variable in DOMESTIC_VARS + OIL_VAR.
+#        All countries overlaid as coloured lines.  Saved to PDF.
+###############################################################################
+
+plot_gvar_series(sim_data,
+                 var_list  = c(DOMESTIC_VARS, "oil"),
+                 file_out  = "gvar_variable_plots.pdf")
+
 
 # COVID pulse dummies (appended as exogenous regressors, one column per quarter)
 covid_dummies <- 
