@@ -502,6 +502,16 @@ draw_niw_posterior <- function(B_n, V_n, S_n, v_n, k_dom) {
 #' @param max_attempts Maximum total draw attempts when regularise = TRUE.
 #'                    Defaults to 10 * n_draws.  A warning is issued if fewer
 #'                    than n_draws stable draws are obtained within this budget.
+#' @param lambda_5    Sum-of-coefficients (SOC) prior weight (Doan-Litterman-Sims).
+#'                    When > 0, augments each unit's Y/X with k_dom dummy rows that
+#'                    shrink the sum of lag coefficients toward zero, pulling draws
+#'                    away from unit roots and reducing explosiveness.  Larger values
+#'                    = stronger stationarity push (try 0.01–0.1).  Default 0 = off.
+#' @param project_stable Logical; if TRUE, any draw whose companion matrix is
+#'                    explosive is rescaled so its spectral radius equals 0.99
+#'                    (eigenvalue projection).  This guarantees all retained draws
+#'                    are stable without discarding them (unlike regularise).
+#'                    Can be combined with regularise.  Default FALSE.
 #' @return A bayesian_gvar object
 bayesian_estimate_gvar <- function(gvar_data,
                                     n_draws = 1000,
@@ -513,7 +523,9 @@ bayesian_estimate_gvar <- function(gvar_data,
                                     seed = 42,
                                     deterministic = "intercept",
                                     regularise = FALSE,
-                                    max_attempts = NULL) {
+                                    max_attempts = NULL,
+                                    lambda_5 = 0,
+                                    project_stable = FALSE) {
 
   print_banner("Bayesian GVAR Estimation (Minnesota Prior)")
 
@@ -599,6 +611,34 @@ bayesian_estimate_gvar <- function(gvar_data,
       V_0 <- diag(lambda_1^2, m)
       S_0 <- diag(sigma_sq[1:k_dom])
       v_0 <- k_dom + 2
+    }
+
+    # ---- Sum-of-coefficients (SOC) prior augmentation ----
+    # When lambda_5 > 0, add k_dom dummy observations that shrink the sum of
+    # lag coefficients toward zero, penalising near-unit-root behaviour.
+    # The dummy for variable i sets Y_i = y_bar[i]/lambda_5 and places
+    # y_bar[j]/(p_lag*lambda_5) in each of the p_lag * k_dom lagged-domestic
+    # X positions, zeros elsewhere (det, star, global).
+    if (lambda_5 > 0 && cd$p_lag >= 1) {
+      p_lag_soc <- cd$p_lag
+      # Pre-sample mean: use the mean of the first p_lag rows of Y
+      y_bar <- colMeans(Y[seq_len(min(p_lag_soc, nrow(Y))), , drop = FALSE],
+                         na.rm = TRUE)
+      Y_soc <- matrix(0, nrow = k_dom, ncol = k_dom)
+      X_soc <- matrix(0, nrow = k_dom, ncol = m)
+      lag_dom_start <- n_det + k_star + k_global + 1L  # first lagged-domestic row in X
+
+      for (j in seq_len(k_dom)) {
+        Y_soc[j, j] <- y_bar[j] / lambda_5
+        # Place y_bar[j]/(p_lag*lambda_5) in every lag-of-variable-j position
+        for (l in seq_len(p_lag_soc)) {
+          col_idx <- lag_dom_start + (l - 1L) * k_dom + (j - 1L)
+          if (col_idx <= m)
+            X_soc[j, col_idx] <- y_bar[j] / (p_lag_soc * lambda_5)
+        }
+      }
+      Y <- rbind(Y, Y_soc)
+      X <- rbind(X, X_soc)
     }
 
     # Posterior computation — Minnesota prior ensures V_0 is PD, so no fallback needed
@@ -796,7 +836,13 @@ bayesian_estimate_gvar <- function(gvar_data,
 
       gd <- .one_draw()
       if (!is.null(gd)) {
-        companion_draws[, , s] <- gd$companion
+        comp <- gd$companion
+        if (project_stable && !isTRUE(gd$is_stable)) {
+          sr <- max(Mod(eigen(comp, only.values = TRUE)$values))
+          if (is.finite(sr) && sr > 0) comp <- comp * (0.99 / sr)
+          gd$is_stable <- TRUE
+        }
+        companion_draws[, , s] <- comp
         Sigma_draws[, , s]     <- gd$Sigma
         F0_draws[, s]          <- gd$F0
         stable_flags[s]        <- gd$is_stable

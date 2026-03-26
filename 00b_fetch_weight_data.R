@@ -353,25 +353,25 @@ ISO3_TO_ISO2 <- c(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Source 5 : Hardcoded approximate GDP shares (last-resort fallback)
-#   Uses approximate 2015 GDP shares from World Bank/IMF data.
-#   Countries not in the table get equal weight among themselves.
+#   Uses approximate 2024 nominal GDP (USD trillion) from IMF WEO Oct-2024.
+#   Countries not in the table get the median share among knowns.
 # ─────────────────────────────────────────────────────────────────────────────
 
-.APPROX_GDP_2015 <- c(
-  USA=18.1, CHN=11.1, JPN=4.4,  DEU=3.4,  GBR=2.9,  FRA=2.4,  IND=2.1,
-  ITA=1.8,  BRA=1.8,  CAN=1.6,  KOR=1.4,  AUS=1.2,  RUS=1.4,  ESP=1.2,
-  MEX=1.2,  IDN=0.9,  NLD=0.8,  TUR=0.8,  CHE=0.7,  SWE=0.6,  POL=0.5,
-  BEL=0.5,  AUT=0.4,  NOR=0.4,  ZAF=0.3,  IRL=0.3,  DNK=0.3,  PRT=0.2,
-  GRC=0.2,  FIN=0.2,  CZE=0.2,  HUN=0.1,  ROU=0.2,  BGR=0.06, HRV=0.05,
-  SVK=0.1,  SVN=0.05, EA=12.0
+.APPROX_GDP_2024 <- c(
+  USA=28.8, CHN=18.5, DEU=4.5,  JPN=4.1,  IND=3.9,  GBR=3.1,  FRA=3.0,
+  ITA=2.3,  BRA=2.2,  CAN=2.2,  RUS=2.2,  KOR=1.8,  MEX=1.8,  AUS=1.7,
+  ESP=1.6,  IDN=1.4,  NLD=1.1,  TUR=1.1,  CHE=0.9,  IRL=0.6,  NOR=0.6,
+  POL=0.8,  SWE=0.6,  BEL=0.6,  AUT=0.5,  ZAF=0.4,  DNK=0.4,  ROU=0.4,
+  FIN=0.3,  CZE=0.3,  GRC=0.3,  PRT=0.3,  HUN=0.2,  BGR=0.1,  HRV=0.08,
+  SVK=0.12, SVN=0.06, EA=16.0
 )
 
 .hardcoded_gdp_weights <- function(countries) {
   cat("[Weights] Using hardcoded approximate GDP shares (last resort).\n")
   N   <- length(countries)
-  gdp <- .APPROX_GDP_2015[countries]
+  gdp <- .APPROX_GDP_2024[countries]
   # Countries missing from table get median share
-  gdp[is.na(gdp)] <- median(.APPROX_GDP_2015, na.rm = TRUE)
+  gdp[is.na(gdp)] <- median(.APPROX_GDP_2024, na.rm = TRUE)
   names(gdp) <- countries
 
   W <- matrix(0, N, N, dimnames = list(countries, countries))
