@@ -19,6 +19,8 @@
 ###############################################################################
 
 library(dplyr)
+library(tidyr)
+library(tibble)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ISO-3 ↔ IMF-area-code mapping
@@ -103,6 +105,7 @@ ISO3_TO_IMF2 <- c(
   W <- .pad(W, countries)
   covered <- mean(rowSums(W) > 0)
   cat(sprintf("  OECD: %.0f%% of countries covered.\n", covered * 100))
+  if (covered < 0.25) { message("  OECD: insufficient coverage – trying next source."); return(NULL) }
   .row_norm(W)
 }
 
@@ -207,6 +210,7 @@ ISO3_TO_IMF2 <- c(
   W_full <- .pad(W_imf, countries)
   covered <- mean(rowSums(W_full) > 0)
   cat(sprintf("  IMF DOTS: %.0f%% of countries covered.\n", covered * 100))
+  if (covered < 0.25) { message("  IMF DOTS: insufficient coverage – trying next source."); return(NULL) }
   .row_norm(W_full)
 }
 
@@ -348,6 +352,7 @@ ISO3_TO_ISO2 <- c(
 
   covered <- mean(rowSums(W) > 0)
   cat(sprintf("  WB GDP: %.0f%% of countries covered.\n", covered * 100))
+  if (covered < 0.25) { message("  WB GDP: insufficient coverage – trying next source."); return(NULL) }
   .row_norm(W)
 }
 
