@@ -44,9 +44,10 @@ library(dplyr)
 COUNTRIES <- c("DEU", "ESP", "FRA", "ITA")
 
 # Domestic variables to use in each country's VARX*.
-# Pick column names from fred_data (level / log / logdiff transformations).
-# Stationary variables preferred: logdiff for GDP/CPI/REER/EQ, levels for rates.
-DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "lt_rate", "reer_logdiff")
+# Pick column names from fred_data.  Log-levels are the GVAR standard (I(1) in
+# levels, cointegration handled by GVECM if detected).
+# Options per variable:  *_level (raw), *_log (log level), *_logdiff (stationary)
+DOMESTIC_VARS <- c("gdp_log", "cpi_log", "lt_rate", "reer_log")
 
 # Global variable: one oil transformation enters via the dominant-unit approach.
 # Options: "oil_level"  – price in $/barrel (I(1), use with unit-root caution)
@@ -67,13 +68,13 @@ DETERMINISTIC <- "intercept"
 COVID_DUMMIES <- c("2020-Q1", "2020-Q2")   # set NULL to turn off
 
 # Bayesian prior (Minnesota/Litterman)
-BAYES_DRAWS      <- 1000
-BAYES_LAMBDA1    <- 0.01    # overall tightness
-BAYES_LAMBDA2    <- 0.01    # cross-variable tightness
-BAYES_LAMBDA3    <- 0.01    # lag decay
-BAYES_LAMBDA4    <- 0.01    # star-variable tightness
-BAYES_RW             <- TRUE    # TRUE = random-walk prior
-BAYES_REGULARISE     <- FALSE   # TRUE = reject explosive draws via rejection sampling
+BAYES_DRAWS          <- 1000
+BAYES_LAMBDA1        <- 0.01    # overall tightness
+BAYES_LAMBDA2        <- 0.01    # cross-variable tightness
+BAYES_LAMBDA3        <- 0.01    # lag decay
+BAYES_LAMBDA4        <- 0.01    # star-variable tightness
+BAYES_RW             <- TRUE    # TRUE = random-walk prior (set FALSE for white-noise)
+BAYES_REGULARISE     <- FALSE   # TRUE = reject explosive draws (rejection sampling)
 BAYES_LAMBDA5        <- 0.05    # sum-of-coefficients prior (0 = off; 0.01–0.1 typical)
 BAYES_PROJECT_STABLE <- FALSE   # TRUE = rescale explosive companion draws to sr=0.99
 
@@ -230,7 +231,7 @@ bayesian_diag <- run_bayesian_all_diagnostics(
 #  8.  IMPULSE RESPONSES
 ###############################################################################
 
-shock_var <- paste0(COUNTRIES[1], ".gdp_logdiff")
+shock_var <- paste0(COUNTRIES[1], ".", DOMESTIC_VARS[1])
 
 irf_freq <- bootstrap_girf(gvar_model, shock_var,
                             horizon = IRF_HORIZON, n_boot = IRF_BOOT,
@@ -248,10 +249,12 @@ bayesian_model_comparison(irf_bayes, irf_freq)
 #  9.  CONDITIONAL FORECASTING
 ###############################################################################
 
+# Conditional scenario: 3-quarter path for the first domestic variable of COUNTRIES[1].
+# Values should be on the same scale as DOMESTIC_VARS[1] (log-levels by default).
 conditions <- data.frame(
-  variable  = rep(paste0(COUNTRIES[1], ".gdp_logdiff"), 3),
+  variable  = rep(paste0(COUNTRIES[1], ".", DOMESTIC_VARS[1]), 3),
   horizon   = 1:3,
-  value     = c(-0.03, -0.04, -0.01),
+  value     = c(-0.01, -0.01, -0.005),   # illustrative log-level deviations; adjust as needed
   type      = "hard",
   tolerance = 0
 )
