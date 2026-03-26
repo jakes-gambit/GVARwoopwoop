@@ -284,3 +284,98 @@ partition_deterministic <- function(beta, n_det, has_intercept, has_trend,
 
   list(intercept = intercept, trend = trend_coef, start_idx = idx)
 }
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 11.  Variable Recovery  (model space → economic variables)
+# ───────────────────────────────────────────────────────────────────────────────
+
+#' Convert GVAR forecast / history matrices from model-space transformations
+#' back to interpretable economic variables.
+#'
+#' The model stores variables in three possible forms:
+#'   - "*_logdiff"  : quarterly log-change  → annualised % growth = × 400
+#'   - "*_log"      : log level             → exponentiate to recover level
+#'   - "*_level" / raw levels (rate, lt_rate, oil_level, …)  → pass through
+#'
+#' @param mat       T × K matrix of model-space values.  Columns must be named
+#'                  with the convention "UNIT.varname" (as in gvar_model$var_names).
+#' @param freq      "quarterly" (default) or "annual".  Controls annualisation.
+#' @param log_base_list  Named list: for "*_log" variables, supply the last
+#'                  observed level so that the forecast log can be exponentiated.
+#'                  Element name must match the full "UNIT.varname" string.
+#'                  Pass NULL to skip level recovery for log variables.
+#' @return  A data frame with the same row structure as mat and columns:
+#'   variable, period (1…T), model_value, econ_value, econ_unit
+recover_economic_variables <- function(mat, freq = "quarterly",
+                                       log_base_list = NULL) {
+
+  mat   <- as.matrix(mat)
+  vnames <- colnames(mat)
+  if (is.null(vnames)) stop("mat must have named columns (UNIT.varname).")
+
+  annualise <- if (freq == "quarterly") 400 else 100
+
+  rows <- list()
+  for (j in seq_along(vnames)) {
+    vfull <- vnames[j]
+    # Strip the "UNIT." prefix to get the raw variable name
+    dot    <- regexpr("\\.", vfull)[1]
+    varstr <- substr(vfull, dot + 1, nchar(vfull))
+
+    for (t in seq_len(nrow(mat))) {
+      mv <- mat[t, j]
+      ev <- NA_real_
+      eu <- "raw"
+
+      if (grepl("_logdiff$", varstr)) {
+        # Annualised percentage growth rate
+        ev <- mv * annualise
+        eu <- "% growth (ann.)"
+
+      } else if (grepl("_log$", varstr)) {
+        # Log level: convert to index level if base supplied
+        if (!is.null(log_base_list) && vfull %in% names(log_base_list)) {
+          ev <- exp(mv) * log_base_list[[vfull]]
+        } else {
+          ev <- exp(mv)
+        }
+        eu <- "index level"
+
+      } else {
+        # Rates, levels, oil — pass through unchanged
+        ev <- mv
+        eu <- if (grepl("rate|lt_rate", varstr)) "% p.a." else "level"
+      }
+
+      rows[[length(rows) + 1]] <- data.frame(
+        variable    = vfull,
+        period      = t,
+        model_value = mv,
+        econ_value  = ev,
+        econ_unit   = eu,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  do.call(rbind, rows)
+}
+
+
+#' Quick helper: extract the last observed value (in model space) for each
+#' variable in a sim_data list, returning a named list suitable for
+#' log_base_list in recover_economic_variables().
+#'
+#' @param sim_data  Named list of T × k matrices (as built by to_gvar_list)
+#' @return          Named list of scalars: "UNIT.varname" → last_value
+last_observed_levels <- function(sim_data) {
+  out <- list()
+  for (u in names(sim_data)) {
+    mat <- sim_data[[u]]
+    for (v in colnames(mat)) {
+      out[[paste0(u, ".", v)]] <- mat[nrow(mat), v]
+    }
+  }
+  out
+}

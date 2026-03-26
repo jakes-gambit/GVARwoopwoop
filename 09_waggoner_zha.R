@@ -205,16 +205,24 @@ unconditional_forecast_path <- function(gvar_model, data_list, max_h) {
   # Companion intercept
   cc <- c(F0, rep(0, kp - k_total))
 
-  # Build initial companion state from the last p observations
-  unit_names <- names(data_list)
-  TT_data <- nrow(data_list[[unit_names[1]]])
+  # Build initial companion state from the last p observations.
+  # Use gvar_model$var_names to select only the model variables in the right
+  # order (non-dominant units may have fewer columns than data_list[[unit]]).
+  TT_data <- nrow(data_list[[names(data_list)[1]]])
+  vnames  <- gvar_model$var_names
 
   state <- c()
   for (l in 0:(p_global - 1)) {
     t_idx <- TT_data - l
-    x_t <- c()
-    for (u in unit_names) {
-      x_t <- c(x_t, as.numeric(data_list[[u]][t_idx, ]))
+    x_t   <- numeric(k_total)
+    for (v in seq_len(k_total)) {
+      vname  <- vnames[v]
+      dot    <- regexpr("\\.", vname)[1]
+      u      <- substr(vname, 1, dot - 1)
+      varstr <- substr(vname, dot + 1, nchar(vname))
+      if (u %in% names(data_list) && varstr %in% colnames(data_list[[u]])) {
+        x_t[v] <- data_list[[u]][t_idx, varstr]
+      }
     }
     state <- c(state, x_t)
   }

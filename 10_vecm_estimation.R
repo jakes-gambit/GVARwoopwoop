@@ -47,20 +47,24 @@
 #' @param q_lag      Integer; foreign lag order (in levels; VECM uses q diffs incl contemp)
 #' @param ecdet      Deterministic specification: "const", "trend", or "none"
 #' @param global_exog  T × g matrix of global exogenous variables (NULL if none)
-#' @param d_lag      Integer; lags for global exogenous (NULL defaults to q_lag)
+#' @param d_lag        Integer; lags for global exogenous (NULL defaults to q_lag)
+#' @param covid_dummies T × d matrix of pulse/step dummies (NULL = none)
+#' @param ridge_lambda  Ridge penalty for the short-run OLS (default 0 = plain OLS)
 #' @return  A list with VECM-specific and levels-VAR-compatible components
 estimate_unit_vecx <- function(domestic, star, rank, p_lag, q_lag,
                                ecdet = "const",
                                global_exog = NULL, d_lag = NULL,
-                               deterministic = "intercept") {
-  
+                               deterministic = "intercept",
+                               covid_dummies = NULL,
+                               ridge_lambda  = 0) {
+
   domestic <- as.matrix(domestic)
   star     <- as.matrix(star)
   TT       <- nrow(domestic)
   k_dom    <- ncol(domestic)
   k_star   <- ncol(star)
   m        <- k_dom + k_star
-  
+
   # Global exogenous
   k_global <- 0
   if (!is.null(global_exog)) {
@@ -69,6 +73,15 @@ estimate_unit_vecx <- function(domestic, star, rank, p_lag, q_lag,
     if (is.null(d_lag)) d_lag <- q_lag
   } else {
     d_lag <- 0
+  }
+
+  # COVID / crisis dummies
+  k_dummy <- 0
+  if (!is.null(covid_dummies)) {
+    covid_dummies <- as.matrix(covid_dummies)
+    if (nrow(covid_dummies) != TT)
+      stop("covid_dummies row count (", nrow(covid_dummies), ") != TT (", TT, ").")
+    k_dummy <- ncol(covid_dummies)
   }
   
   # Cap rank: rank must be strictly less than m (full rank = no cointegration)
@@ -181,7 +194,16 @@ estimate_unit_vecx <- function(domestic, star, rank, p_lag, q_lag,
       }
     }
   }
-  
+
+  # (f) COVID / crisis pulse dummies (enter in levels, contemporaneous only)
+  # The effective sample for the VECM runs from row t_start to t_end of the
+  # first-difference data, which corresponds to original-data rows
+  # (t_start + 1) to (t_end + 1).  Align the dummy block accordingly.
+  if (k_dummy > 0) {
+    dummy_vecm <- covid_dummies[(t_start + 1):(t_end + 1), , drop = FALSE]
+    X_parts[["covid_dummies"]] <- dummy_vecm
+  }
+
   X_vecm <- do.call(cbind, X_parts)
   
   # ---- Deterministic terms in the VECM short-run equation ----
@@ -210,17 +232,18 @@ estimate_unit_vecx <- function(domestic, star, rank, p_lag, q_lag,
   
   det_info <- build_deterministic_columns(nrow(Y_vecm), vecm_deterministic)
   X_full <- if (!is.null(det_info$D_mat)) cbind(det_info$D_mat, X_vecm) else X_vecm
-  fit <- ols_estimate(Y_vecm, X_full, intercept = FALSE)
-  
+  fit <- ols_estimate(Y_vecm, X_full, intercept = FALSE, lambda = ridge_lambda)
+
   # ---- Step 4: Extract VECM parameters ----
   beta_hat <- fit$beta
-  
-  # Verify dimensions: expected rows = n_det + rank + k_star + p_diff*k_dom + q_diff*k_star + k_global*(1 + d_diff)
+
+  # Verify dimensions: expected rows = n_det + rank + k_star + p_diff*k_dom + q_diff*k_star
+  #                                   + k_global*(1 + d_diff) + k_dummy
   n_expected <- det_info$n_det + rank + k_star + p_diff * k_dom + q_diff * k_star +
-    k_global * (1 + d_diff)
+    k_global * (1 + d_diff) + k_dummy
   if (nrow(beta_hat) != n_expected) {
-    stop(sprintf("VECX* coefficient dimension mismatch: beta_hat has %d rows, expected %d (n_det=%d, rank=%d, k_star=%d, p_diff=%d, k_dom=%d, q_diff=%d, k_global=%d, d_diff=%d)",
-                 nrow(beta_hat), n_expected, det_info$n_det, rank, k_star, p_diff, k_dom, q_diff, k_global, d_diff))
+    stop(sprintf("VECX* coefficient dimension mismatch: beta_hat has %d rows, expected %d (n_det=%d, rank=%d, k_star=%d, p_diff=%d, k_dom=%d, q_diff=%d, k_global=%d, d_diff=%d, k_dummy=%d)",
+                 nrow(beta_hat), n_expected, det_info$n_det, rank, k_star, p_diff, k_dom, q_diff, k_global, d_diff, k_dummy))
   }
   
   dp <- partition_deterministic(beta_hat, det_info$n_det,
@@ -523,9 +546,12 @@ vecm_to_levels_var <- function(alpha, beta, Gamma_dom, Gamma_star,
 #'                    (from panel_cointegration())
 #' @param ecdet       Deterministic specification for Johansen: "const",
 #'                    "trend", or "none"
+#' @param ridge_lambda Ridge (L2) penalty applied to the short-run VECM OLS and
+#'                    to any VARX* units with r_i = 0.  Default 0 = plain OLS.
 #' @return            A gvar_model object with additional $vecm_info
 estimate_gvecm <- function(gvar_data, rank_vec, ecdet = "const",
-                           deterministic = "intercept") {
+                           deterministic = "intercept",
+                           ridge_lambda  = 0) {
   
   print_banner("GVECM Model Estimation (Error-Correction Form)")
   
@@ -642,15 +668,17 @@ estimate_gvecm <- function(gvar_data, rank_vec, ecdet = "const",
       star_full <- star_list[[u]]
       
       fit <- estimate_unit_vecx(
-        domestic    = dom_full,
-        star        = star_full,
-        rank        = r_i,
-        p_lag       = cd$p_lag,
-        q_lag       = cd$q_lag,
-        ecdet       = ecdet,
+        domestic      = dom_full,
+        star          = star_full,
+        rank          = r_i,
+        p_lag         = cd$p_lag,
+        q_lag         = cd$q_lag,
+        ecdet         = ecdet,
         global_exog   = g_exog,
         d_lag         = g_d_lag,
-        deterministic = deterministic
+        deterministic = deterministic,
+        covid_dummies = gvar_data$covid_dummies,
+        ridge_lambda  = ridge_lambda
       )
       
       alpha_list[[u]] <- fit$alpha
@@ -667,7 +695,7 @@ estimate_gvecm <- function(gvar_data, rank_vec, ecdet = "const",
       
       det <- build_deterministic_columns(nrow(cd$Y), deterministic)
       X_full <- if (!is.null(det$D_mat)) cbind(det$D_mat, cd$X) else cd$X
-      fit_ols <- ols_estimate(cd$Y, X_full, intercept = FALSE)
+      fit_ols <- ols_estimate(cd$Y, X_full, intercept = FALSE, lambda = ridge_lambda)
       
       beta_raw <- fit_ols$beta
       dp <- partition_deterministic(beta_raw, det$n_det,

@@ -35,6 +35,7 @@
 #  4. kalman_smoother()               – Rauch-Tung-Striebel backward smoother
 #  5. conditional_forecast()          – master function
 #  6. plot_conditional_forecast()     – visualisation
+#  7. kalman_temporal_disaggregate()  – annual → quarterly via Kalman smoother
 ###############################################################################
 
 
@@ -359,16 +360,24 @@ conditional_forecast <- function(gvar_model, conditions, max_h = NULL,
 
   # --- Set initial state from the last p observations ---
   if (!is.null(data_list)) {
-    unit_names <- names(data_list)
-    TT_data <- nrow(data_list[[unit_names[1]]])
+    TT_data <- nrow(data_list[[names(data_list)[1]]])
 
-    # Stack the global vector for the last p periods
+    # Build the initial state using gvar_model$var_names to select exactly the
+    # variables that belong to the model, in the correct order.
+    # var_names entries are "UNIT.varname"; some units (non-dominant) may have
+    # fewer columns than data_list[[unit]] because global vars were stripped.
     alpha_init <- c()
     for (l in 0:(p_global - 1)) {
       t_idx <- TT_data - l
-      x_t <- c()
-      for (u in unit_names) {
-        x_t <- c(x_t, as.numeric(data_list[[u]][t_idx, ]))
+      x_t <- numeric(k_total)
+      for (v in seq_len(k_total)) {
+        vname  <- vnames[v]
+        dot    <- regexpr("\\.", vname)[1]
+        u      <- substr(vname, 1, dot - 1)
+        varstr <- substr(vname, dot + 1, nchar(vname))
+        if (u %in% names(data_list) && varstr %in% colnames(data_list[[u]])) {
+          x_t[v] <- data_list[[u]][t_idx, varstr]
+        }
       }
       alpha_init <- c(alpha_init, x_t)
     }
@@ -521,4 +530,186 @@ plot_conditional_forecast <- function(cf_result, plot_vars = NULL,
 
   print(p)
   return(invisible(p))
+}
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 7.  Kalman Temporal Disaggregation  (annual → quarterly)
+# ───────────────────────────────────────────────────────────────────────────────
+
+#' Disaggregate an annual time series to quarterly frequency using a
+#' Kalman filter / smoother.
+#'
+#' State-space formulation (Chow-Lin in state-space form):
+#'
+#'   State (quarterly):  x_t = rho * x_{t-1} + sigma_q * eps_t,   eps_t ~ N(0,1)
+#'   Observation (annual): Y_y = sum_{q=1}^{4} x_{4(y-1)+q}  + nu_y,  nu_y ~ N(0, sigma_obs^2)
+#'
+#' When an indicator series (e.g. quarterly trade data) is available it can be
+#' supplied via `indicator`; the AR(1) state is then replaced by a regression
+#' on the indicator in the observation model.
+#'
+#' @param annual_values  Numeric vector of length n_years; the annual series
+#'                       (e.g. annual GDP level or annual average CPI).
+#' @param n_years        Integer; number of annual observations.
+#' @param start_year     Integer; first year (used for output labelling).
+#' @param aggregation    "sum" (default) or "average": how four quarters
+#'                       aggregate to a year.
+#' @param rho_init       Starting value for AR(1) parameter (optimised by ML).
+#'                       Default 0.9.
+#' @param sigma_q_init   Starting value for quarterly innovation s.d.
+#' @param obs_noise_frac Variance of annual observation noise as a fraction of
+#'                       the annual series variance.  Default 1e-4 (near hard).
+#' @return  A list with:
+#'   \item{quarterly}{Named numeric vector, length 4 * n_years, labelled
+#'                    "YYYY-QN".}
+#'   \item{annual_fitted}{Annual aggregates from the smoothed quarterly series.}
+#'   \item{params}{Estimated rho and sigma_q (via grid search ML).}
+kalman_temporal_disaggregate <- function(annual_values,
+                                         n_years        = length(annual_values),
+                                         start_year     = 1990L,
+                                         aggregation    = c("average", "sum"),
+                                         rho_init       = 0.9,
+                                         sigma_q_init   = NULL,
+                                         obs_noise_frac = 1e-4) {
+
+  aggregation <- match.arg(aggregation)
+  n_q <- n_years * 4L   # total quarterly periods
+
+  # ── Helper: run the Kalman filter for given (rho, sigma_q) ──────────────
+  kf_disagg <- function(rho, sigma_q) {
+    sigma_obs2 <- obs_noise_frac * var(annual_values, na.rm = TRUE)
+
+    # Aggregation row  (1 × 4 or 4 × 4 depending on position within year)
+    agg_w <- if (aggregation == "sum") 1 else 0.25
+
+    # Storage
+    x_pred  <- numeric(n_q)
+    P_pred  <- numeric(n_q)
+    x_filt  <- numeric(n_q)
+    P_filt  <- numeric(n_q)
+    ll      <- 0
+
+    # Initialise at unconditional mean
+    x_prev <- mean(annual_values, na.rm = TRUE) /
+      if (aggregation == "sum") 4 else 1
+    P_prev <- sigma_q^2 / (1 - rho^2 + 1e-12)
+
+    # Accumulate within-year state for observation update
+    x_acc <- 0   # running sum (or average) of quarterly states in current year
+    P_acc <- 0   # associated variance (sum of P's, ignoring covariances approx)
+
+    year_q <- 0L   # quarter within year counter
+
+    for (t in seq_len(n_q)) {
+      year_q <- year_q + 1L
+
+      # Predict
+      x_pr <- rho * x_prev
+      P_pr <- rho^2 * P_prev + sigma_q^2
+      x_pred[t] <- x_pr
+      P_pred[t] <- P_pr
+
+      # Accumulate within-year (for the end-of-year observation)
+      x_acc <- x_acc + agg_w * x_pr
+      P_acc <- P_acc + agg_w^2 * P_pr
+
+      if (year_q == 4L) {
+        # Year complete: update with annual observation
+        y_idx <- (t - 3L) %/% 4L + 1L
+        y_obs <- annual_values[y_idx]
+
+        if (!is.na(y_obs)) {
+          innov  <- y_obs - x_acc
+          S      <- P_acc + sigma_obs2
+          K      <- P_pr * agg_w / S   # Kalman gain for the last quarter only
+          x_filt[t] <- x_pr + K * innov
+          P_filt[t] <- (1 - K * agg_w) * P_pr
+          ll <- ll - 0.5 * (log(2 * pi * S) + innov^2 / S)
+        } else {
+          x_filt[t] <- x_pr
+          P_filt[t] <- P_pr
+        }
+
+        # Back-fill the earlier quarters in this year (approx, no smoother here)
+        if (t > 3L) {
+          for (s in (t - 3L):(t - 1L)) {
+            x_filt[s] <- x_pred[s]
+            P_filt[s] <- P_pred[s]
+          }
+        }
+
+        # Reset accumulator
+        x_acc  <- 0
+        P_acc  <- 0
+        year_q <- 0L
+
+      } else {
+        x_filt[t] <- x_pr
+        P_filt[t] <- P_pr
+      }
+
+      x_prev <- x_filt[t]
+      P_prev <- P_filt[t]
+    }
+
+    list(x_filt = x_filt, P_filt = P_filt,
+         x_pred = x_pred, P_pred = P_pred, ll = ll)
+  }
+
+  # ── Grid search over rho ─────────────────────────────────────────────────
+  if (is.null(sigma_q_init)) {
+    sigma_q_init <- sd(annual_values, na.rm = TRUE) / 4
+  }
+  rho_grid <- seq(0.5, 0.99, by = 0.05)
+  best_ll  <- -Inf
+  best_rho <- rho_init
+
+  for (rho_try in rho_grid) {
+    res <- tryCatch(kf_disagg(rho_try, sigma_q_init), error = function(e) NULL)
+    if (!is.null(res) && is.finite(res$ll) && res$ll > best_ll) {
+      best_ll  <- res$ll
+      best_rho <- rho_try
+    }
+  }
+
+  # ── Forward filter + backward smoother (RTS) with best rho ──────────────
+  kf_res <- kf_disagg(best_rho, sigma_q_init)
+
+  # RTS smoother
+  x_sm <- kf_res$x_filt
+  P_sm <- kf_res$P_filt
+
+  for (t in (n_q - 1L):1L) {
+    if (kf_res$P_pred[t + 1L] > 1e-12) {
+      J_t   <- best_rho * kf_res$P_filt[t] / kf_res$P_pred[t + 1L]
+      x_sm[t] <- kf_res$x_filt[t] + J_t * (x_sm[t + 1L] - kf_res$x_pred[t + 1L])
+      P_sm[t] <- kf_res$P_filt[t] + J_t^2 * (P_sm[t + 1L] - kf_res$P_pred[t + 1L])
+    }
+  }
+
+  # ── Label the quarterly series ───────────────────────────────────────────
+  qtr_labels <- character(n_q)
+  idx <- 1L
+  for (y in start_year:(start_year + n_years - 1L)) {
+    for (q in 1:4) {
+      qtr_labels[idx] <- paste0(y, "-Q", q)
+      idx <- idx + 1L
+    }
+  }
+  names(x_sm) <- qtr_labels
+
+  # Annual aggregates from smoothed series
+  annual_fitted <- numeric(n_years)
+  agg_w <- if (aggregation == "sum") 1 else 0.25
+  for (y in seq_len(n_years)) {
+    idx_q <- ((y - 1L) * 4L + 1L):(y * 4L)
+    annual_fitted[y] <- sum(agg_w * x_sm[idx_q])
+  }
+
+  list(
+    quarterly    = x_sm,
+    annual_fitted = annual_fitted,
+    params       = list(rho = best_rho, sigma_q = sigma_q_init)
+  )
 }
