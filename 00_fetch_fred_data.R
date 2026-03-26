@@ -165,9 +165,17 @@ fred_series <- list(
              rate="IR3TIB01INQ156N",  lt_rate="IRLTLT01INQ156N",
              reer="CCRETT01INQ661N",  eq="SPASTT01INQ661N"),
 
-  CHN = list(gdp="NAEXKP01CNQ657S",   cpi="CHNCPIALLMINMEI",
-             rate="IR3TIB01CNQ156N",  lt_rate="IRLTLT01CNQ156N",
-             reer="CCRETT01CNQ661N"),
+  # China: several OECD MEI quarterly series do not exist on FRED for CHN.
+  #   GDP        – quarterly SA volume index does not exist; omitted here and
+  #                disaggregated from annual NAEXKP01CNA657S in section 7.
+  #   lt_rate    – IRLTLT01 (10Y bond) not published for China on FRED; proxy
+  #                is INTDSRCNM193N (IMF IFS lending rate, monthly).
+  #   rate/REER  – monthly series used; FRED aggregates to quarterly via freq="q".
+  CHN = list(cpi     = "CHNCPIALLMINMEI",   # monthly → quarterly avg (OECD, 1993+)
+             rate    = "IR3TIB01CNM156N",   # monthly → quarterly avg (OECD, 1997+)
+             lt_rate = "INTDSRCNM193N",     # monthly lending rate → quarterly avg (IMF IFS)
+             reer    = "CCRETT01CNQ661N",   # quarterly REER (OECD, 1970+) ✓
+             eq      = "SPASTT01CNM661N"),  # monthly share prices → quarterly avg (OECD, 1999+)
 
   # ── Non-OECD / NAEXKP01 not on FRED: keep national-accounts volumes ─────────
   # Note: gdp levels for these will differ in scale from the OECD index countries.
@@ -398,18 +406,16 @@ cat("Note: Content generated using AI – expert verification recommended.\n")
 source("08_kalman_filter.R")   # for kalman_temporal_disaggregate()
 
 
-# Use the validated quarterly series IDs with frequency="a" so FRED aggregates
-# them to annual automatically.  The quarterly IDs below are confirmed to exist.
-#   GDP  : NAEXKP01CNQ657S  (real GDP index, SA, quarterly)
-#   CPI  : CHNCPIALLMINMEI  (CPI all items, monthly – FRED averages to annual)
-#   Short: IR3TIB01CNQ156N  (3-month money market rate, quarterly)
-#   Long : IRLTLT01CNQ156N  (10-yr bond yield, quarterly)
-#   REER : CCRETT01CNQ661N  (REER, quarterly)
+# Confirmed FRED series for China annual disaggregation (verified 2025):
+#   GDP  : NAEXKP01CNA657S  – OECD GDP volume index, SA, 2015=100, ANNUAL only
+#                             (quarterly version does not exist on FRED for CHN)
+#   CPI  : CHNCPIALLMINMEI  – monthly; FRED aggregates to annual avg
+#   REER : CCRETT01CNQ661N  – quarterly; FRED aggregates to annual avg
+#   (lt_rate omitted: IRLTLT01 not published for China on FRED)
 chn_annual_series <- list(
-  gdp     = "NAEXKP01CNQ657S",   # quarterly → annual avg via frequency="a"
-  cpi     = "CHNCPIALLMINMEI",   # monthly  → annual avg via frequency="a"
-  lt_rate = "IRLTLT01CNQ156N",   # quarterly → annual avg via frequency="a"
-  reer    = "CCRETT01CNQ661N"    # quarterly → annual avg via frequency="a"
+  gdp  = "NAEXKP01CNA657S",   # annual GDP volume index, SA, 2015=100
+  cpi  = "CHNCPIALLMINMEI",   # monthly → annual avg
+  reer = "CCRETT01CNQ661N"    # quarterly → annual avg
 )
 
 cat("\nFetching annual China (CHN) series from FRED...\n")
@@ -494,13 +500,12 @@ if (length(chn_quarterly_disagg) > 0) {
 
     # Map variable name to the fred_data column(s) to patch
     col_map <- list(
-      gdp     = c("gdp", "gdp_level", "gdp_log", "gdp_logdiff"),
-      cpi     = c("cpi", "cpi_level", "cpi_log", "cpi_logdiff"),
-      lt_rate = c("lt_rate", "rho_l"),
-      reer    = c("reer", "reer_level", "reer_log", "reer_logdiff")
+      gdp  = c("gdp", "gdp_level", "gdp_log", "gdp_logdiff"),
+      cpi  = c("cpi", "cpi_level", "cpi_log", "cpi_logdiff"),
+      reer = c("reer", "reer_level", "reer_log", "reer_logdiff")
     )
 
-    level_col <- switch(v, gdp = "gdp", cpi = "cpi", lt_rate = "lt_rate", reer = "reer")
+    level_col <- switch(v, gdp = "gdp", cpi = "cpi", reer = "reer")
 
     for (qi in seq_along(qtr_series)) {
       dt   <- qtr_dates[qi]
