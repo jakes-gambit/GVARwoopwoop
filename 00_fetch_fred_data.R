@@ -26,7 +26,7 @@ FRED_API_KEY <- "ee414e1326bd3ad7ad5d4bae231901b0"   # <-- paste your key
 fredr_set_key(FRED_API_KEY)
 
 start_date <- "1970-01-01"
-end_date   <- "2023-12-31"
+end_date   <- "2025-12-31"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  FRED Series IDs
@@ -266,7 +266,8 @@ oil_q <- oil_raw %>%
   dplyr::arrange(date) %>%
   dplyr::mutate(
     oil_log     = log(oil_level),
-    oil_logdiff = oil_log - dplyr::lag(oil_log)
+    oil_logdiff = oil_log - dplyr::lag(oil_log),
+    oil_diff = oil_level - dplyr::lag(oil_level)
   )
 
 # Helper: compute log-diff safely within a vector
@@ -297,7 +298,8 @@ fred_data <- raw %>%
     eq_real_logdiff  = ld(eq / cpi),
     # Quarterly log interest rates: ρ = 0.25 · ln(1 + R/100)  (Dees et al. 2007)
     rho_s            = 0.25 * log(1 + rate    / 100),
-    rho_l            = 0.25 * log(1 + lt_rate / 100)
+    rho_l            = 0.25 * log(1 + lt_rate / 100),
+    rho_lms          = rho_l - rho_s
   ) %>%
   dplyr::ungroup() %>%
   dplyr::left_join(oil_q, by = "date") %>%   # same oil value for every country

@@ -17,7 +17,7 @@
 
 # ── 0. Source all modules ────────────────────────────────────────────────────
 
-setwd("C:/Users/WZHJEAB/Desktop/Conditional Forecasting 2/")   # adjust path
+# setwd("C:/Users/WZHJEAB/Desktop/Conditional Forecasting 2/")   # adjust path
 
 source("01_utils.R")
 source("02_data_preparation.R")
@@ -41,18 +41,18 @@ library(dplyr)
 ###############################################################################
 
 # Countries to include (must be present in fred_data)
-COUNTRIES <- c("USA", "DEU", "FRA")
+COUNTRIES <- c("USA", "DEU", "JPN", "FRA", "ITA")
 
 # Domestic variables to use in each country's VARX*.
 # Pick column names from fred_data (level / log / logdiff transformations).
 # Stationary variables preferred: logdiff for GDP/CPI/REER/EQ, levels for rates.
-DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "rho_l", "reer_log", "eq_real_log")
+DOMESTIC_VARS <- c("gdp_log", "cpi_logdiff", "rho_lms", "reer_log", "eq_log")
 
 # Global variable: one oil transformation enters via the dominant-unit approach.
 # Options: "oil_level"  – price in $/barrel (I(1), use with unit-root caution)
 #          "oil_log"    – log price level   (I(1))
 #          "oil_logdiff"– quarterly log-change (stationary, lowest instability)
-OIL_VAR       <- "oil_logdiff"
+OIL_VAR       <- "oil_diff"
 OIL_DOM_UNIT  <- "USA"    # country where oil is endogenous
 
 # Lags
@@ -64,7 +64,7 @@ LAG_CRITERION <- "bic"
 DETERMINISTIC <- "intercept"
 
 # COVID dummies: pulse dummies for specified quarters (set to NULL to disable)
-COVID_DUMMIES <- c("2020-Q1", "2020-Q2")   # set NULL to turn off
+COVID_DUMMIES <-c("2020-Q1", "2020-Q2")   # set NULL to turn off
 
 # ── Ridge regularisation ──────────────────────────────────────────────────────
 # Set RIDGE_LAMBDA > 0 to apply ridge (L2) shrinkage to the frequentist VAR.
@@ -78,8 +78,8 @@ OOS_H      <- 1
 OOS_T0_FRAC <- 0.70
 
 # IRF
-IRF_HORIZON <- 20
-IRF_BOOT    <- 2000
+IRF_HORIZON <- 200
+IRF_BOOT    <- 0
 IRF_CI      <- 0.95
 
 # Cointegration (Johansen)
@@ -137,12 +137,12 @@ covid_dummies <-
   }
 
 
-# Bilateral trade weight matrix from empirical data
+# # Bilateral trade weight matrix from empirical data
 W_raw <- fetch_trade_weights(COUNTRIES, avg_years = WEIGHT_YEARS,
-                              finance_alpha = WEIGHT_FIN_ALPHA)
+                               finance_alpha = WEIGHT_FIN_ALPHA)
 
 # Global variable config
-GLOBAL_VARS <- list(var_names = "oil", dominant_unit = OIL_DOM_UNIT, d_lag = 1)
+GLOBAL_VARS <- list(var_names = c("oil"), dominant_unit = OIL_DOM_UNIT, d_lag = 1)
 
 message(sprintf("[Data] %d countries, %d observations each, variables: %s",
                 length(sim_data), nrow(sim_data[[1]]),
@@ -230,10 +230,10 @@ diag_results <- run_all_diagnostics(
 #  8.  IMPULSE RESPONSES  (VAR-based GIRF)
 ###############################################################################
 
-shock_var <- paste0(COUNTRIES[1], ".gdp_logdiff")
+shock_var <- paste0(COUNTRIES[1], ".gdp_log")
 
 irf_freq <- bootstrap_girf(gvar_model, shock_var,
-                            horizon = IRF_HORIZON, n_boot = IRF_BOOT,
+                            horizon = 20, n_boot = IRF_BOOT,
                             ci_level = IRF_CI)
 plot_irf(irf_freq, shock_label = shock_var)
 
@@ -243,20 +243,20 @@ plot_irf(irf_freq, shock_label = shock_var)
 ###############################################################################
 
 conditions <- data.frame(
-  variable  = rep(paste0(COUNTRIES[1], ".gdp_logdiff"), 3),
-  horizon   = 1:3,
-  value     = c(-0.03, -0.04, -0.01),
+  variable  = rep(paste0(COUNTRIES[1], ".oil"), 20),
+  horizon   = 1:20,
+  value     = rep(12,20),
   type      = "hard",
   tolerance = 0
 )
 
 # ── 9a. Kalman filter ────────────────────────────────────────────────────────
-cf_kf <- conditional_forecast(gvar_model, conditions, max_h = 8,
-                               data_list = sim_data, ci_level = 0.95)
+cf_kf <- conditional_forecast(gvar_model, conditions, max_h = 20,
+                               data_list = sim_data, ci_level = 0)
 plot_conditional_forecast(cf_kf)
 
 # ── 9b. Waggoner & Zha ───────────────────────────────────────────────────────
-cf_wz <- conditional_forecast_wz(gvar_model, conditions, max_h = 8,
+cf_wz <- conditional_forecast_wz(gvar_model, conditions, max_h = 20,
                                   data_list = sim_data, n_draws = 2000,
                                   ci_level = 0.95)
 plot_conditional_forecast_wz(cf_wz, show_uncond = TRUE)
