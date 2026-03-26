@@ -158,17 +158,21 @@ recursive_oos_forecast <- function(gvar_model, data_list, star_list, W,
   var_names <- gvar_model$var_names
 
   # Build the global data matrix x_t (T × k_total)
+  # Match by var_names (unit.varname) to avoid including global-exogenous columns
+  # that live in data_list but are not part of the endogenous system.
   unit_names <- names(data_list)
   TT <- nrow(data_list[[unit_names[1]]])
 
   x_global <- matrix(NA, nrow = TT, ncol = k_total)
   colnames(x_global) <- var_names
-  idx <- 1
   for (u in unit_names) {
     mat_u <- as.matrix(data_list[[u]])
-    k_u <- ncol(mat_u)
-    x_global[, idx:(idx + k_u - 1)] <- mat_u
-    idx <- idx + k_u
+    for (v in colnames(mat_u)) {
+      gname <- paste0(u, ".", v)
+      if (gname %in% var_names) {
+        x_global[, gname] <- mat_u[, v]
+      }
+    }
   }
 
   # Determine OOS window
@@ -333,16 +337,21 @@ run_all_diagnostics <- function(gvar_model, data_list, star_list, W,
                                  h = h, t0_frac = t0_frac)
 
   # Build the global matrix for Theil's U
+  # Match by var_names to avoid mismatch with global-exogenous columns.
   unit_names <- names(data_list)
   TT <- nrow(data_list[[unit_names[1]]])
-  k_total <- gvar_model$k_total
+  k_total    <- gvar_model$k_total
+  var_names  <- gvar_model$var_names
   x_global <- matrix(NA, nrow = TT, ncol = k_total)
-  idx <- 1
+  colnames(x_global) <- var_names
   for (u in unit_names) {
     mat_u <- as.matrix(data_list[[u]])
-    k_u <- ncol(mat_u)
-    x_global[, idx:(idx + k_u - 1)] <- mat_u
-    idx <- idx + k_u
+    for (v in colnames(mat_u)) {
+      gname <- paste0(u, ".", v)
+      if (gname %in% var_names) {
+        x_global[, gname] <- mat_u[, v]
+      }
+    }
   }
 
   oos_eval <- oos_evaluation(oos, x_global = x_global, t0_frac = t0_frac)

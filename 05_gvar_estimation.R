@@ -340,7 +340,7 @@ stack_to_gvar <- function(unit_fits, data_list, W, global_config = NULL) {
 #' @param gvar_data  Output from prepare_gvar_dataset()
 #' @return           A list containing everything from stack_to_gvar() plus
 #'                   the individual unit fits.
-estimate_gvar <- function(gvar_data, deterministic = "intercept") {
+estimate_gvar <- function(gvar_data, deterministic = "intercept", ridge_lambda = 0) {
 
   print_banner("GVAR Model Estimation")
 
@@ -364,7 +364,7 @@ estimate_gvar <- function(gvar_data, deterministic = "intercept") {
 
     det_info <- build_deterministic_columns(nrow(cd$Y), deterministic)
     X_full <- if (!is.null(det_info$D_mat)) cbind(det_info$D_mat, cd$X) else cd$X
-    fit <- ols_estimate(cd$Y, X_full, intercept = FALSE)
+    fit <- ols_estimate(cd$Y, X_full, intercept = FALSE, lambda = ridge_lambda)
 
     beta <- fit$beta
     dp <- partition_deterministic(beta, det_info$n_det,
