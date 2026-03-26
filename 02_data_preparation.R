@@ -470,23 +470,23 @@ make_covid_dummies <- function(date_labels,
 #' @param p_lag           Integer or named integer vector of domestic lag orders
 #' @param q_lag           Integer or named integer vector of foreign lag orders
 #' @param freq            "quarterly" or "yearly"
-#' @param covid_dummies   [NEW] Optional T × d matrix of crisis dummies (from
-#'                        make_covid_dummies()).  When supplied, the dummies are
-#'                        appended to every unit's regressor matrix as
-#'                        contemporaneous exogenous controls (no extra lags).
-#'                        Set to NULL to disable (default).
-#' @return                A list with:
-#'   \item{unit_data}{Named list – one element per unit with Y, X, etc.}
-#'   \item{star_list}{Named list of star-variable matrices}
-#'   \item{W}{Row-normalised weight matrix}
-#'   \item{unit_names}{Character vector of unit names}
-#'   \item{freq}{Frequency string}
-#'   \item{covid_dummies}{The dummy matrix passed in (or NULL)}
+#' @param global_vars     Optional list(var_names, dominant_unit, d_lag)
+#' @param deterministic   "none" | "intercept" | "trend" | "both"
+#' @param covid_dummies   Optional T × d matrix of crisis dummies.
+#' @param star_restrict   Controls which star variables enter each unit's model.
+#'   NULL (default): every unit receives all star variables (standard GVAR).
+#'   Character vector: only these variable names (without _star suffix) enter
+#'     as stars in every unit, e.g. c("gdp_log", "cpi_logdiff").
+#'   Named list: per-unit overrides.  Each element is a character vector for
+#'     that unit; units not listed receive the full star set.
+#'     e.g. list(USA = c("gdp_log","cpi_logdiff"), CHN = c("gdp_log")).
+#' @return                A list with unit_data, star_list, W, unit_names, etc.
 prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
                                  freq = "quarterly",
                                  global_vars    = NULL,
                                  deterministic  = "intercept",
-                                 covid_dummies  = NULL) {   # [NEW] crisis dummies
+                                 covid_dummies  = NULL,
+                                 star_restrict  = NULL) {
   
   # Step 1: validate
   validate_gvar_data(data_list, weights, freq)
@@ -572,9 +572,24 @@ prepare_gvar_dataset <- function(data_list, weights, p_lag = 1, q_lag = 1,
       }
     }
 
+    # Apply star variable restriction for this unit
+    star_u <- star_list[[u]]
+    if (!is.null(star_restrict)) {
+      allowed_vars <- if (is.list(star_restrict)) star_restrict[[u]] else star_restrict
+      if (!is.null(allowed_vars)) {
+        allowed_cols <- paste0(allowed_vars, "_star")
+        keep         <- intersect(allowed_cols, colnames(star_u))
+        dropped      <- setdiff(colnames(star_u), keep)
+        if (length(dropped) > 0)
+          message(sprintf("  [%s] Star restricted to: %s (dropped: %s)",
+                          u, paste(keep, collapse = ", "), paste(dropped, collapse = ", ")))
+        star_u <- star_u[, keep, drop = FALSE]
+      }
+    }
+
     unit_data[[u]] <- prepare_country_data(
       domestic      = dom_u,
-      star          = star_list[[u]],
+      star          = star_u,
       p_lag         = p_lag[u],
       q_lag         = q_lag[u],
       global_exog   = g_exog,

@@ -100,6 +100,21 @@ COINT_SIG  <- 0.05
 WEIGHT_YEARS     <- 2014:2016
 WEIGHT_FIN_ALPHA <- 0        # 0 = trade only; >0 blends BIS financial weights
 
+# ── Star variable restrictions ────────────────────────────────────────────────
+# Controls which foreign star variables (x*) enter each country's VARX* model.
+#
+# NULL (default): all star variables flow into every unit (standard GVAR).
+#
+# Character vector: only these variables become stars in EVERY unit.
+#   e.g. STAR_VAR_RESTRICT <- c("gdp_log", "cpi_logdiff")
+#
+# Named list: per-unit overrides; units not listed receive the full star set.
+#   e.g. STAR_VAR_RESTRICT <- list(
+#          USA = c("gdp_log", "cpi_logdiff"),
+#          CHN = c("gdp_log")
+#        )
+STAR_VAR_RESTRICT <- NULL   # set to vector or named list to restrict
+
 
 ###############################################################################
 #  2.  DATA LOADING
@@ -206,7 +221,8 @@ gvar_data <- prepare_gvar_dataset(
   freq          = "quarterly",
   global_vars   = GLOBAL_VARS,
   deterministic = DETERMINISTIC,
-  covid_dummies = covid_dummies
+  covid_dummies = covid_dummies,
+  star_restrict = STAR_VAR_RESTRICT
 )
 
 
