@@ -44,10 +44,14 @@ library(dplyr)
 COUNTRIES <- c("DEU", "ESP", "FRA", "ITA")
 
 # Domestic variables to use in each country's VARX*.
-# Pick column names from fred_data.  Log-levels are the GVAR standard (I(1) in
-# levels, cointegration handled by GVECM if detected).
-# Options per variable:  *_level (raw), *_log (log level), *_logdiff (stationary)
-DOMESTIC_VARS <- c("gdp_log", "cpi_log", "lt_rate", "reer_log")
+# Use stationary transformations to avoid explosive companion matrices.
+#   gdp_logdiff  = real GDP growth (quarterly log-change)
+#   cpi_logdiff  = inflation (quarterly log-change)
+#   lt_rate      = 10-yr bond yield in levels (already ~stationary)
+#   reer_logdiff = real effective exchange rate log-change
+# Alternatives: *_log (log-level, I(1)) or *_level (raw level, I(1)) —
+#   only use those if you handle cointegration via GVECM.
+DOMESTIC_VARS <- c("gdp_logdiff", "cpi_logdiff", "lt_rate", "reer_logdiff")
 
 # Global variable: one oil transformation enters via the dominant-unit approach.
 # Options: "oil_level"  – price in $/barrel (I(1), use with unit-root caution)
@@ -254,7 +258,7 @@ bayesian_model_comparison(irf_bayes, irf_freq)
 conditions <- data.frame(
   variable  = rep(paste0(COUNTRIES[1], ".", DOMESTIC_VARS[1]), 3),
   horizon   = 1:3,
-  value     = c(-0.01, -0.01, -0.005),   # illustrative log-level deviations; adjust as needed
+  value     = c(-0.03, -0.04, -0.01),    # illustrative quarterly growth rates (e.g. -3%); adjust as needed
   type      = "hard",
   tolerance = 0
 )
